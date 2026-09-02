@@ -359,6 +359,57 @@
     position: absolute; left: calc(16px + env(safe-area-inset-left, 0px)); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); right: 80px;
     color: #f5f1e6; font-size: 13.5px; text-shadow: 0 1px 4px rgba(0,0,0,0.8); z-index: 2;
   }
+
+  /* Scrub bar: current/duration time, a draggable played/thumb track, and a
+     few tap-to-jump "highlight" marks along it. */
+  .reels-seekbar-wrap {
+    position: absolute; left: calc(16px + env(safe-area-inset-left, 0px)); right: calc(16px + env(safe-area-inset-right, 0px));
+    bottom: calc(58px + env(safe-area-inset-bottom, 0px)); z-index: 2;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .reels-time {
+    color: #f5f1e6; font-size: 11px; font-family: var(--mono); text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+    flex: none; min-width: 30px;
+  }
+  .reels-time-duration { text-align: right; }
+  .reels-seekbar-track { position: relative; flex: 1; height: 28px; display: flex; align-items: center; cursor: pointer; touch-action: none; }
+  .reels-seekbar-track::before {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+    height: 3px; border-radius: 2px; background: rgba(245,241,230,0.28);
+  }
+  .reels-seekbar-played {
+    position: absolute; left: 0; top: 50%; transform: translateY(-50%); height: 3px; border-radius: 2px;
+    background: var(--brass); width: 0%; pointer-events: none;
+  }
+  .reels-seekbar-thumb {
+    position: absolute; top: 50%; width: 12px; height: 12px; border-radius: 50%; background: var(--brass);
+    transform: translate(-50%, -50%); left: 0%; box-shadow: 0 1px 4px rgba(0,0,0,0.5); pointer-events: none;
+  }
+  .reels-seek-tick {
+    position: absolute; top: 50%; transform: translate(-50%, -50%); width: 6px; height: 6px; border-radius: 50%;
+    background: rgba(245,241,230,0.7); border: none; padding: 0; cursor: pointer; z-index: 1;
+  }
+  .reels-seek-tick:hover { background: #fff; }
+  .reels-scrub-preview {
+    position: absolute; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+    z-index: 3; display: flex; flex-direction: column; align-items: center; gap: 4px; pointer-events: none;
+  }
+  .reels-scrub-preview.hidden { display: none; }
+  .reels-scrub-preview canvas {
+    width: 100px; height: 56px; border-radius: 8px; border: 2px solid rgba(245,241,230,0.85);
+    background: #000; box-shadow: 0 4px 14px rgba(0,0,0,0.5); display: block;
+  }
+  .reels-scrub-preview .reels-scrub-time { color: #f5f1e6; font-size: 11px; font-family: var(--mono); text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
+  .reels-2x-badge {
+    position: absolute; top: calc(16px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%);
+    background: rgba(20,18,12,0.75); border: 1px solid rgba(245,241,230,0.4); color: #f5f1e6;
+    font-size: 13px; font-weight: 700; padding: 5px 12px; border-radius: 999px; z-index: 3; letter-spacing: 0.02em;
+  }
+  .reels-2x-badge.hidden { display: none; }
+  @media (pointer: coarse) {
+    .reels-seekbar-thumb { width: 14px; height: 14px; }
+    .reels-seek-tick { width: 8px; height: 8px; }
+  }
 </style>
 </head>
 <body>
@@ -576,6 +627,23 @@
     <button type="button" id="btn-reels-next" class="reels-icon-btn" aria-label="Next video">&#9660;</button>
   </div>
   <div id="reels-info" class="reels-info"></div>
+  <div class="reels-seekbar-wrap" id="reels-seekbar-wrap">
+    <div class="reels-time reels-time-current" id="reels-time-current">0:00</div>
+    <div class="reels-seekbar-track" id="reels-seekbar-track">
+      <div class="reels-seekbar-played" id="reels-seekbar-played"></div>
+      <button type="button" class="reels-seek-tick" data-frac="0.2" style="left:20%" title="Jump to 20%"></button>
+      <button type="button" class="reels-seek-tick" data-frac="0.4" style="left:40%" title="Jump to 40%"></button>
+      <button type="button" class="reels-seek-tick" data-frac="0.6" style="left:60%" title="Jump to 60%"></button>
+      <button type="button" class="reels-seek-tick" data-frac="0.8" style="left:80%" title="Jump to 80%"></button>
+      <div class="reels-seekbar-thumb" id="reels-seekbar-thumb"></div>
+    </div>
+    <div class="reels-time reels-time-duration" id="reels-time-duration">0:00</div>
+  </div>
+  <div class="reels-scrub-preview hidden" id="reels-scrub-preview">
+    <canvas id="reels-scrub-canvas" width="120" height="68"></canvas>
+    <div class="reels-scrub-time" id="reels-scrub-time">0:00</div>
+  </div>
+  <div class="reels-2x-badge hidden" id="reels-2x-badge">2&times;</div>
 </div>
 
 <div id="page-drop-overlay">
@@ -2486,6 +2554,9 @@ function showReelAt(i) {
   video.pause();
   video.style.transition = "none";
   video.style.transform = "translateY(0)";
+  video.playbackRate = 1;
+  $("#reels-2x-badge").classList.add("hidden");
+  reelsUpdateSeekUI(0, 0, 0);
   $("#reels-info").textContent = reelInfoText(id);
 
   loadReelVideo(id).then(function (url) {
@@ -2511,6 +2582,7 @@ function reelsPrev() { showReelAt(reelsState.index - 1); }
 function closeReels() {
   var video = $("#reels-video");
   video.pause();
+  video.playbackRate = 1;
   video.removeAttribute("src");
   video.load();
   hideModal("#reels-modal");
@@ -2518,6 +2590,9 @@ function closeReels() {
   reelsState.order = [];
   reelsState.originalOrder = [];
   reelsState.records = new Map();
+  $("#reels-2x-badge").classList.add("hidden");
+  reelsHideScrubPreview();
+  reelsSeekDrag = null;
 }
 
 $("#btn-open-reels").addEventListener("click", openReels);
@@ -2553,17 +2628,24 @@ $("#btn-reels-shuffle").addEventListener("click", function () {
   }
 });
 
-/* Vertical swipe (touch) and scroll-wheel navigation, TikTok-style -- the
-   video visibly follows your finger while dragging (with a little
-   resistance, like the real thing). On release it either commits -- flying
+/* Vertical swipe and scroll-wheel navigation, TikTok-style -- the video
+   visibly follows your finger (or mouse, or pen -- Pointer Events cover
+   all three the same way, which also makes this work with a mouse-drag on
+   desktop, not just a touchscreen) while dragging, with a little
+   resistance like the real thing. On release it either commits -- flying
    the rest of the way off-screen in the swipe direction before the next
    video takes its place -- or springs back if the drag was too short and
-   too slow to count as an intentional swipe. */
+   too slow to count as an intentional swipe. A press that *doesn't* turn
+   into a drag, held past REELS_HOLD_MS, engages 2x playback instead --
+   also like the real thing -- and lets go back to 1x on release. */
 var REELS_SWIPE_COMMIT_PX = 55;
 var REELS_FLICK_VELOCITY = 0.5; // px/ms -- a fast short flick commits even under the distance threshold
 var REELS_DRAG_RESISTANCE = 0.55;
 var REELS_FLY_MS = 200;
-var reelsDrag = null; // { startY, lastY, moved, lastT, velocity }
+var REELS_MOVE_CANCEL_PX = 10; // movement past this before the hold timer fires means "drag", not "hold"
+var REELS_HOLD_MS = 220;
+var REELS_HOLD_SPEED = 2;
+var reelsPointer = null; // { id, startX, startY, lastY, moved, lastT, velocity, holding, holdTimer }
 
 function reelsSetDragTransform(px, animate) {
   var video = $("#reels-video");
@@ -2572,34 +2654,62 @@ function reelsSetDragTransform(px, animate) {
 }
 function reelsResetDragTransform() { reelsSetDragTransform(0, true); }
 
-$("#reels-modal").addEventListener("touchstart", function (e) {
-  if (e.touches.length !== 1) { reelsDrag = null; return; }
-  var y = e.touches[0].clientY;
-  reelsDrag = { startY: y, lastY: y, moved: false, lastT: Date.now(), velocity: 0 };
+function reelsEngageHoldSpeed() {
+  $("#reels-video").playbackRate = REELS_HOLD_SPEED;
+  $("#reels-2x-badge").classList.remove("hidden");
+}
+function reelsDisengageHoldSpeed() {
+  $("#reels-video").playbackRate = 1;
+  $("#reels-2x-badge").classList.add("hidden");
+}
+
+$("#reels-video").addEventListener("pointerdown", function (e) {
+  if (!e.isPrimary || reelsPointer) return;
+  var pointer = {
+    id: e.pointerId, startX: e.clientX, startY: e.clientY, lastY: e.clientY,
+    moved: false, lastT: Date.now(), velocity: 0, holding: false, holdTimer: null,
+  };
+  pointer.holdTimer = setTimeout(function () {
+    if (reelsPointer !== pointer || pointer.moved) return;
+    pointer.holding = true;
+    reelsEngageHoldSpeed();
+  }, REELS_HOLD_MS);
+  reelsPointer = pointer;
+  try { $("#reels-video").setPointerCapture(e.pointerId); } catch (err) {}
 }, { passive: true });
 
-$("#reels-modal").addEventListener("touchmove", function (e) {
-  if (!reelsDrag || e.touches.length !== 1) return;
+$("#reels-video").addEventListener("pointermove", function (e) {
+  if (!reelsPointer || e.pointerId !== reelsPointer.id || reelsPointer.holding) return;
+  var y = e.clientY;
+  if (!reelsPointer.moved && Math.hypot(e.clientX - reelsPointer.startX, y - reelsPointer.startY) > REELS_MOVE_CANCEL_PX) {
+    reelsPointer.moved = true;
+    clearTimeout(reelsPointer.holdTimer); // a real drag started -- hold-to-2x no longer applies
+  }
+  if (!reelsPointer.moved) return;
   e.preventDefault(); // fully own the gesture -- no native scroll/bounce fighting it
-  var y = e.touches[0].clientY;
   var now = Date.now();
-  var dt = now - reelsDrag.lastT;
-  if (dt > 0) reelsDrag.velocity = (y - reelsDrag.lastY) / dt;
-  reelsDrag.lastY = y;
-  reelsDrag.lastT = now;
-  var dy = reelsDrag.lastY - reelsDrag.startY;
-  if (Math.abs(dy) > 6) reelsDrag.moved = true;
-  reelsSetDragTransform(dy * REELS_DRAG_RESISTANCE, false);
+  var dt = now - reelsPointer.lastT;
+  if (dt > 0) reelsPointer.velocity = (y - reelsPointer.lastY) / dt;
+  reelsPointer.lastY = y;
+  reelsPointer.lastT = now;
+  reelsSetDragTransform((y - reelsPointer.startY) * REELS_DRAG_RESISTANCE, false);
 }, { passive: false });
 
-$("#reels-modal").addEventListener("touchend", function () {
-  if (!reelsDrag) return;
-  var dy = reelsDrag.lastY - reelsDrag.startY;
-  var fastFlick = Math.abs(reelsDrag.velocity) >= REELS_FLICK_VELOCITY && Math.abs(dy) > 24;
-  var wasSwipe = reelsDrag.moved && (Math.abs(dy) >= REELS_SWIPE_COMMIT_PX || fastFlick);
-  reelsSuppressNextClick = reelsDrag.moved;
-  reelsDrag = null;
+function reelsEndPointer() {
+  if (!reelsPointer) return;
+  clearTimeout(reelsPointer.holdTimer);
+  var wasHolding = reelsPointer.holding;
+  var moved = reelsPointer.moved;
+  var dy = reelsPointer.lastY - reelsPointer.startY;
+  var velocity = reelsPointer.velocity;
+  reelsPointer = null;
 
+  if (wasHolding) { reelsDisengageHoldSpeed(); reelsSuppressNextClick = true; return; }
+  if (!moved) return; // a simple tap -- let the native click handler toggle play/pause
+
+  var fastFlick = Math.abs(velocity) >= REELS_FLICK_VELOCITY && Math.abs(dy) > 24;
+  var wasSwipe = Math.abs(dy) >= REELS_SWIPE_COMMIT_PX || fastFlick;
+  reelsSuppressNextClick = true;
   if (!wasSwipe) { reelsResetDragTransform(); return; }
 
   // Commit: finish flying the video off-screen in the swipe direction --
@@ -2610,10 +2720,109 @@ $("#reels-modal").addEventListener("touchend", function () {
   var flyPx = (video.clientHeight || window.innerHeight || 800) * (goingNext ? -1 : 1);
   reelsSetDragTransform(flyPx, true);
   setTimeout(function () { if (goingNext) reelsNext(); else reelsPrev(); }, REELS_FLY_MS);
+}
+$("#reels-video").addEventListener("pointerup", function (e) {
+  if (!reelsPointer || e.pointerId !== reelsPointer.id) return;
+  reelsEndPointer();
 });
-$("#reels-modal").addEventListener("touchcancel", function () {
-  reelsDrag = null;
+$("#reels-video").addEventListener("pointercancel", function (e) {
+  if (!reelsPointer || e.pointerId !== reelsPointer.id) return;
+  var wasHolding = reelsPointer.holding;
+  clearTimeout(reelsPointer.holdTimer);
+  reelsPointer = null;
+  if (wasHolding) reelsDisengageHoldSpeed();
   reelsResetDragTransform();
+});
+
+/* ---------------- Reels scrub bar: drag/tap to seek, plus a live preview
+   thumbnail and a few tap-to-jump marks along the way. ---------------- */
+function formatReelsTime(s) {
+  if (!isFinite(s) || s < 0) s = 0;
+  var m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m + ":" + (sec < 10 ? "0" : "") + sec;
+}
+function reelsUpdateSeekUI(frac, currentSeconds, durationSeconds) {
+  var pct = Math.max(0, Math.min(1, frac)) * 100;
+  $("#reels-seekbar-played").style.width = pct + "%";
+  $("#reels-seekbar-thumb").style.left = pct + "%";
+  $("#reels-time-current").textContent = formatReelsTime(currentSeconds);
+  $("#reels-time-duration").textContent = formatReelsTime(durationSeconds);
+}
+function reelsDrawScrubFrame() {
+  var video = $("#reels-video");
+  var canvas = $("#reels-scrub-canvas");
+  try { canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height); } catch (e) {}
+}
+function reelsShowScrubPreview(frac) {
+  var track = $("#reels-seekbar-track");
+  var rect = track.getBoundingClientRect();
+  var wrap = $("#reels-scrub-preview");
+  wrap.style.left = Math.max(rect.left + 50, Math.min(rect.right - 50, rect.left + frac * rect.width)) + "px";
+  wrap.classList.remove("hidden");
+  $("#reels-scrub-time").textContent = formatReelsTime(frac * ($("#reels-video").duration || 0));
+  reelsDrawScrubFrame();
+}
+function reelsHideScrubPreview() { $("#reels-scrub-preview").classList.add("hidden"); }
+
+$("#reels-video").addEventListener("loadedmetadata", function () {
+  reelsUpdateSeekUI(0, 0, $("#reels-video").duration || 0);
+});
+$("#reels-video").addEventListener("timeupdate", function () {
+  if (reelsSeekDrag) return; // don't fight the user's drag with playback updates
+  var video = $("#reels-video");
+  if (!video.duration) return;
+  reelsUpdateSeekUI(video.currentTime / video.duration, video.currentTime, video.duration);
+});
+$("#reels-video").addEventListener("seeked", function () {
+  if (reelsSeekDrag) reelsDrawScrubFrame();
+});
+
+var reelsSeekDrag = null; // { pointerId, wasPlaying }
+function reelsSeekFraction(clientX) {
+  var rect = $("#reels-seekbar-track").getBoundingClientRect();
+  return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+}
+function reelsSeekTo(clientX) {
+  var video = $("#reels-video");
+  if (!video.duration) return;
+  var frac = reelsSeekFraction(clientX);
+  video.currentTime = frac * video.duration;
+  reelsUpdateSeekUI(frac, video.currentTime, video.duration);
+  reelsShowScrubPreview(frac);
+}
+$("#reels-seekbar-track").addEventListener("pointerdown", function (e) {
+  var video = $("#reels-video");
+  if (!video.duration) return;
+  reelsSeekDrag = { pointerId: e.pointerId, wasPlaying: !video.paused };
+  video.pause();
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+  reelsSeekTo(e.clientX);
+  e.stopPropagation();
+});
+$("#reels-seekbar-track").addEventListener("pointermove", function (e) {
+  if (!reelsSeekDrag || e.pointerId !== reelsSeekDrag.pointerId) return;
+  reelsSeekTo(e.clientX);
+  e.stopPropagation();
+});
+function reelsEndSeekDrag(e) {
+  if (!reelsSeekDrag || (e && e.pointerId !== reelsSeekDrag.pointerId)) return;
+  var video = $("#reels-video");
+  if (reelsSeekDrag.wasPlaying) video.play().catch(function () {});
+  reelsSeekDrag = null;
+  reelsHideScrubPreview();
+}
+$("#reels-seekbar-track").addEventListener("pointerup", reelsEndSeekDrag);
+$("#reels-seekbar-track").addEventListener("pointercancel", reelsEndSeekDrag);
+
+$$(".reels-seek-tick").forEach(function (tick) {
+  tick.addEventListener("click", function (e) {
+    e.stopPropagation();
+    var video = $("#reels-video");
+    if (!video.duration) return;
+    var frac = parseFloat(tick.dataset.frac);
+    video.currentTime = frac * video.duration;
+    reelsUpdateSeekUI(frac, video.currentTime, video.duration);
+  });
 });
 
 var reelsWheelLocked = false;
