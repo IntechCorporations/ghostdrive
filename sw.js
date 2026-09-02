@@ -100,7 +100,14 @@ function uploadEntry(entry) {
 }
 function drainQueue() {
   return getAllEntries().then(function (entries) {
-    return entries.reduce(function (chain, entry) {
+    // A freshly-picked file is queued in "raw" form (the original File,
+    // not yet encrypted) the instant it's picked, before app.js has had a
+    // chance to encrypt it -- see app.js's "Durable upload queue" comment.
+    // This worker never has the master key, so it can't do that step;
+    // a raw entry just sits there until the tab is open again to finish
+    // preparing it, same as any other browser without Background Sync.
+    var ready = entries.filter(function (entry) { return entry.stage === "prepared" || (!entry.stage && entry.dbPayload); });
+    return ready.reduce(function (chain, entry) {
       return chain.then(function () { return uploadEntry(entry); });
     }, Promise.resolve());
   });
