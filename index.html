@@ -340,8 +340,17 @@
     display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none;
   }
   .reels-overlay.hidden { display: none; }
+  /* Fills the whole overlay (including any letterboxed black bars beside a
+     video whose aspect ratio doesn't match the screen) so a swipe/hold
+     started anywhere on screen is caught -- not just on the video's own,
+     possibly-narrower, rendered box. */
+  .reels-touch-surface { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; touch-action: none; }
   #reels-video { max-width: 100%; max-height: 100%; height: 100%; width: auto; object-fit: contain; background: #000; will-change: transform; }
   .reels-empty { color: #f0ece0; font-size: 15px; }
+  .reels-loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 120px; pointer-events: none; }
+  .reels-loading.hidden { display: none; }
+  .reels-loading-track { height: 3px; border-radius: 2px; background: rgba(245,241,230,0.28); overflow: hidden; }
+  .reels-loading-fill { height: 100%; width: 0%; background: var(--brass); transition: width 0.15s linear; }
   .reels-icon-btn {
     background: rgba(20,18,12,0.55); border: 1px solid rgba(245,241,230,0.35); color: #f5f1e6;
     width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
@@ -615,7 +624,12 @@
 </div>
 
 <div id="reels-modal" class="reels-overlay hidden">
-  <video id="reels-video" playsinline loop></video>
+  <div id="reels-touch-surface" class="reels-touch-surface">
+    <video id="reels-video" playsinline loop></video>
+    <div class="reels-loading hidden" id="reels-loading">
+      <div class="reels-loading-track"><div class="reels-loading-fill" id="reels-loading-fill"></div></div>
+    </div>
+  </div>
   <p id="reels-empty" class="reels-empty hidden">No videos yet — add some first.</p>
   <button type="button" id="btn-reels-close" class="reels-icon-btn reels-close" title="Close (Esc)">&times;</button>
   <div class="reels-top-controls">
@@ -739,6 +753,16 @@ var state = {
   masterKey: null,
   fileKeyCache: new Map(),
 };
+
+// True the instant this page is a password-recovery landing (the emailed
+// link redirects back here with a recovery token in the URL). Checked
+// synchronously, before anything async has a chance to race it, because
+// boot()'s own "which screen should this session see" logic must NOT run
+// in that case -- otherwise it can call showAuthScreen() and stomp the
+// set-new-password screen right back to the login page a moment after the
+// PASSWORD_RECOVERY handler put it up (both are async and can resolve in
+// either order; this flag makes the outcome deterministic instead).
+var inPasswordRecovery = /type=recovery/.test(window.location.hash) || /type=recovery/.test(window.location.search);
 
 // This project's Supabase URL and anon public key -- both meant to be
 // embedded in client-side code like this. The anon key only ever grants
@@ -931,6 +955,9 @@ $("#btn-forgot-send").addEventListener("click", function () {
 function wireAuthListener() {
   sb.auth.onAuthStateChange(function (event) {
     if (event === "PASSWORD_RECOVERY") {
+      inPasswordRecovery = true; // backup for the URL-based check above, in
+                                  // case the redirect ever lands here shaped
+                                  // differently than expected
       $("#new-password-input").value = "";
       $("#set-new-password-error").textContent = "";
       showScreen("#screen-set-new-password");
@@ -967,6 +994,7 @@ $("#btn-set-new-password").addEventListener("click", function () {
     state.userId = res.data.user.id;
     state.email = res.data.user.email;
     state.masterKey = mk;
+    inPasswordRecovery = false;
     enterVault();
   }).catch(function (err) { errEl.textContent = friendlyError(err); });
 });
@@ -1018,6 +1046,12 @@ function boot() {
   sodium.ready.then(function () {
     return sb.auth.getSession();
   }).then(function (res) {
+    // A password-recovery landing already put up the set-new-password
+    // screen (see the flag's declaration above) -- this routing check has
+    // nothing useful to add here and, worse, would otherwise send the user
+    // right back to the login screen mid-reset.
+    if (inPasswordRecovery) return;
+
     var session = res.data.session;
     if (!session) { showAuthScreen(); return; }
 
@@ -2486,15 +2520,44 @@ function reelsClearCache() {
   reelsState.cacheOrder = [];
 }
 
-function loadReelVideo(id) {
+// Same Storage REST endpoint storageUploadXHR() posts to, just GET instead
+// of POST -- done as a raw XHR (rather than the supabase-js storage.download()
+// helper) purely to get real byte-level progress out of xhr.onprogress,
+// which that helper doesn't expose. Powers the loading bar in showReelAt().
+function storageDownloadXHR(path, onProgress) {
+  return sb.auth.getSession().then(function (res) {
+    var token = (res.data.session && res.data.session.access_token) || SUPABASE_ANON_KEY;
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", SUPABASE_URL + "/storage/v1/object/" + BUCKET + "/" + path);
+      xhr.setRequestHeader("Authorization", "Bearer " + token);
+      xhr.setRequestHeader("apikey", SUPABASE_ANON_KEY);
+      xhr.responseType = "arraybuffer";
+      xhr.timeout = 10 * 60 * 1000;
+      if (onProgress) {
+        xhr.onprogress = function (e) { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+      }
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (onProgress) onProgress(1, 1);
+          resolve(xhr.response);
+        } else {
+          reject(new Error("Download failed (" + xhr.status + ")"));
+        }
+      };
+      xhr.onerror = function () { reject(new Error("Network error during download.")); };
+      xhr.ontimeout = function () { reject(new Error("Download timed out.")); };
+      xhr.send();
+    });
+  });
+}
+
+function loadReelVideo(id, onProgress) {
   var cached = reelsCacheGet(id);
   if (cached) return Promise.resolve(cached.url);
   var record = reelsState.records.get(id);
   if (!record) return Promise.reject(new Error("Video not found."));
-  return sb.storage.from(BUCKET).download(record.content_path).then(function (res) {
-    if (res.error) throw res.error;
-    return res.data.arrayBuffer();
-  }).then(function (buf) {
+  return storageDownloadXHR(record.content_path, onProgress).then(function (buf) {
     var loaded = loadObjectMeta(record); // also warms state.fileKeyCache
     var plain = decryptBytes(loaded.fileKey, new Uint8Array(buf));
     var blob = new Blob([plain], { type: loaded.metaJson.mime || "video/mp4" });
@@ -2518,9 +2581,11 @@ function openReels() {
 
     reelsState.records = recordsById;
     reelsState.originalOrder = order;
-    reelsState.order = order;
-    reelsState.shuffled = false;
-    $("#btn-reels-shuffle").classList.remove("active");
+    // Opens shuffled by default, TikTok/IG-style -- shuffle can still be
+    // switched off with the shuffle button, same toggle as before.
+    reelsState.order = shuffleArray(order);
+    reelsState.shuffled = true;
+    $("#btn-reels-shuffle").classList.add("active");
     reelsState.index = 0;
 
     showModal("#reels-modal");
@@ -2559,19 +2624,30 @@ function showReelAt(i) {
   reelsUpdateSeekUI(0, 0, 0);
   $("#reels-info").textContent = reelInfoText(id);
 
-  loadReelVideo(id).then(function (url) {
+  var loadingEl = $("#reels-loading");
+  var loadingFill = $("#reels-loading-fill");
+  loadingFill.style.width = "0%";
+  loadingEl.classList.remove("hidden");
+
+  loadReelVideo(id, function (loaded, total) {
+    if (myToken !== reelsState.loadToken) return;
+    loadingFill.style.width = (total ? (loaded / total) * 100 : 0) + "%";
+  }).then(function (url) {
     if (myToken !== reelsState.loadToken) return; // superseded by a later swipe
+    loadingEl.classList.add("hidden");
     video.src = url;
     video.muted = reelsState.muted;
     video.currentTime = 0;
     video.play().catch(function () {});
   }).catch(function (err) {
     if (myToken !== reelsState.loadToken) return;
+    loadingEl.classList.add("hidden");
     $("#reels-info").textContent = "Couldn't load this video: " + friendlyError(err);
   });
 
   // Preemptive loading: warm the cache for the neighbors on either side so
-  // the *next* swipe doesn't have to wait on a download + decrypt.
+  // the *next* swipe doesn't have to wait on a download + decrypt. No
+  // loading bar for these -- they're silent, background prefetches.
   loadReelVideo(order[(i + 1) % n]).catch(function () {});
   if (n > 1) loadReelVideo(order[(i - 1 + n) % n]).catch(function () {});
 }
@@ -2591,6 +2667,7 @@ function closeReels() {
   reelsState.originalOrder = [];
   reelsState.records = new Map();
   $("#reels-2x-badge").classList.add("hidden");
+  $("#reels-loading").classList.add("hidden");
   reelsHideScrubPreview();
   reelsSeekDrag = null;
 }
@@ -2663,7 +2740,7 @@ function reelsDisengageHoldSpeed() {
   $("#reels-2x-badge").classList.add("hidden");
 }
 
-$("#reels-video").addEventListener("pointerdown", function (e) {
+$("#reels-touch-surface").addEventListener("pointerdown", function (e) {
   if (!e.isPrimary || reelsPointer) return;
   var pointer = {
     id: e.pointerId, startX: e.clientX, startY: e.clientY, lastY: e.clientY,
@@ -2675,10 +2752,10 @@ $("#reels-video").addEventListener("pointerdown", function (e) {
     reelsEngageHoldSpeed();
   }, REELS_HOLD_MS);
   reelsPointer = pointer;
-  try { $("#reels-video").setPointerCapture(e.pointerId); } catch (err) {}
+  try { $("#reels-touch-surface").setPointerCapture(e.pointerId); } catch (err) {}
 }, { passive: true });
 
-$("#reels-video").addEventListener("pointermove", function (e) {
+$("#reels-touch-surface").addEventListener("pointermove", function (e) {
   if (!reelsPointer || e.pointerId !== reelsPointer.id || reelsPointer.holding) return;
   var y = e.clientY;
   if (!reelsPointer.moved && Math.hypot(e.clientX - reelsPointer.startX, y - reelsPointer.startY) > REELS_MOVE_CANCEL_PX) {
@@ -2721,11 +2798,11 @@ function reelsEndPointer() {
   reelsSetDragTransform(flyPx, true);
   setTimeout(function () { if (goingNext) reelsNext(); else reelsPrev(); }, REELS_FLY_MS);
 }
-$("#reels-video").addEventListener("pointerup", function (e) {
+$("#reels-touch-surface").addEventListener("pointerup", function (e) {
   if (!reelsPointer || e.pointerId !== reelsPointer.id) return;
   reelsEndPointer();
 });
-$("#reels-video").addEventListener("pointercancel", function (e) {
+$("#reels-touch-surface").addEventListener("pointercancel", function (e) {
   if (!reelsPointer || e.pointerId !== reelsPointer.id) return;
   var wasHolding = reelsPointer.holding;
   clearTimeout(reelsPointer.holdTimer);
