@@ -56,7 +56,10 @@
 
   .demo-banner {
     background: var(--brass-tint); color: var(--text); font-size: 13px; text-align: center;
-    padding: 9px 16px; border-bottom: 1px solid var(--line); line-height: 1.5;
+    padding: 9px 56px; border-bottom: 1px solid var(--line); line-height: 1.5;
+  }
+  @media (max-width: 640px) {
+    .demo-banner { font-size: 12px; padding: 9px 48px 9px 12px; text-align: left; }
   }
 
   .theme-toggle-btn {
@@ -72,12 +75,12 @@
   .screen { min-height: calc(100vh - 40px); display: flex; align-items: center; justify-content: center; padding: 32px 20px; }
   .card {
     background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 36px; width: 100%; max-width: 420px;
+    padding: 36px; width: 100%; max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.18);
   }
-  .card h1 { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; }
+  .card h1 { font-size: 32px; font-weight: 600; letter-spacing: -0.01em; margin-top: 4px; }
   .card h2 { font-size: 22px; font-weight: 600; margin-bottom: 6px; }
-  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--brass); margin: 0 0 8px; }
-  .tagline { color: var(--text-dim); margin: 6px 0 28px; font-size: 14.5px; line-height: 1.55; }
+  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--brass); margin: 0; }
+  .tagline { color: var(--text-dim); margin: 10px 0 28px; font-size: 14.5px; line-height: 1.6; }
 
   .tabs { display: flex; gap: 6px; margin-bottom: 22px; background: var(--ink-3); padding: 4px; border-radius: 8px; }
   .tab { flex: 1; padding: 9px; border-radius: 6px; border: none; background: transparent; color: var(--text-dim); cursor: pointer; font: 500 13.5px var(--sans); }
@@ -94,9 +97,11 @@
   button {
     padding: 11px 18px; border-radius: 7px; border: 1px solid var(--brass-strong);
     background: var(--brass); color: #1c1406; font-weight: 600; cursor: pointer; font-size: 14px; font-family: var(--sans);
+    transition: filter 0.12s, background 0.12s, border-color 0.12s, transform 0.08s;
   }
   button:hover { filter: brightness(1.06); }
-  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
   button.secondary { background: transparent; color: var(--text); border-color: var(--line); }
   button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .oauth-btn {
@@ -112,12 +117,12 @@
   .stack { display: flex; flex-direction: column; gap: 15px; }
 
   .vault-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 16px 28px; border-bottom: 1px solid var(--line); background: var(--ink-2);
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+    padding: 16px 28px; border-bottom: 1px solid var(--line); background: var(--ink-2); gap: 12px;
   }
   .brand { font-family: var(--serif); font-weight: 600; font-size: 19px; display: flex; align-items: center; gap: 8px; }
   .brand .mark { color: var(--brass); }
-  .header-actions { display: flex; gap: 10px; align-items: center; }
+  .header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
   .upload-btn { display: inline-flex; align-items: center; }
   #btn-lock { background: transparent; border: 1px solid var(--line); color: var(--text-dim); }
 
@@ -129,6 +134,41 @@
   .tile-size-control { display: flex; align-items: center; gap: 6px; }
   .tile-size-control .tile-size-icon { font-size: 13px; color: var(--text-dim); }
   .tile-size-control input[type="range"] { width: 100px; accent-color: var(--brass); }
+
+  /* ---------------- Responsive: header, toolbar, spacing ---------------- */
+  @media (max-width: 760px) {
+    .vault-header { padding: 12px 16px; }
+    .header-actions { width: 100%; justify-content: space-between; }
+    .header-actions .upload-btn { order: -1; flex: 1 1 100%; }
+    .header-actions .upload-btn button { width: 100%; }
+    #btn-import-google-photos, #btn-open-reels { flex: 1 1 auto; }
+    .toolbar { padding: 10px 16px; }
+    .toolbar-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+    .toolbar-controls > div { width: 100%; }
+    .toolbar-controls select { width: 100%; }
+    .tile-size-control { grid-column: 1 / -1; }
+    .tile-size-control input[type="range"] { flex: 1; width: auto; }
+    #selection-bar, .date-group-header, .gallery, .gallery.list-view { padding-left: 16px; padding-right: 16px; }
+    .modal-content { padding: 18px; }
+  }
+  @media (max-width: 460px) {
+    .card { padding: 26px 22px; }
+    #btn-import-google-photos, #btn-open-reels { font-size: 12.5px; padding: 10px 12px; }
+  }
+
+  /* Touch devices get bigger targets across the board -- this doesn't
+     affect mouse/trackpad users at all, only fingers. */
+  @media (pointer: coarse) {
+    button, .oauth-btn { min-height: 44px; }
+    input, select { min-height: 44px; }
+    .log-trigger { min-height: 34px; }
+    .thumb .select-check { width: 28px; height: 28px; top: 8px; left: 8px; opacity: 1; }
+    .list-view .thumb .select-check { width: 24px; height: 24px; }
+    .modal-nav { width: 48px; height: 48px; font-size: 26px; }
+    .modal-close { font-size: 28px; padding: 8px 10px; }
+    .reels-icon-btn { width: 48px; height: 48px; font-size: 20px; }
+    .theme-toggle-btn { width: 40px; height: 40px; }
+  }
 
   #drop-zone { position: relative; min-height: 200px; }
 
@@ -226,7 +266,13 @@
   }
   .list-compact .thumb img, .list-compact .thumb video, .list-compact .thumb.placeholder { display: none; }
 
-  .empty-state { text-align: center; color: var(--text-dim); padding: 70px 20px; font-size: 14.5px; }
+  .empty-state {
+    text-align: center; color: var(--text-dim); padding: 90px 20px; font-size: 15px;
+    max-width: 340px; margin: 0 auto; line-height: 1.6;
+  }
+  .empty-state::before {
+    content: "◐"; display: block; font-size: 30px; color: var(--brass); margin-bottom: 14px; opacity: 0.7;
+  }
 
   .modal { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
   .modal-backdrop { position: absolute; inset: 0; background: rgba(10,9,6,0.72); }
@@ -303,12 +349,15 @@
   }
   .reels-icon-btn:hover { background: rgba(20,18,12,0.8); filter: none; }
   .reels-icon-btn.active { background: var(--brass); color: #1c1406; border-color: var(--brass); }
-  .reels-close { position: absolute; top: 16px; right: 16px; z-index: 2; }
-  .reels-top-controls { position: absolute; top: 16px; left: 16px; display: flex; gap: 10px; z-index: 2; }
-  .reels-vnav { position: absolute; right: 16px; bottom: 45%; display: flex; flex-direction: column; gap: 10px; z-index: 2; }
+  .reels-close { position: absolute; top: calc(16px + env(safe-area-inset-top, 0px)); right: calc(16px + env(safe-area-inset-right, 0px)); z-index: 2; }
+  .reels-top-controls {
+    position: absolute; top: calc(16px + env(safe-area-inset-top, 0px)); left: calc(16px + env(safe-area-inset-left, 0px));
+    display: flex; gap: 10px; z-index: 2;
+  }
+  .reels-vnav { position: absolute; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: 45%; display: flex; flex-direction: column; gap: 10px; z-index: 2; }
   .reels-info {
-    position: absolute; left: 16px; bottom: 24px; right: 80px; color: #f5f1e6; font-size: 13.5px;
-    text-shadow: 0 1px 4px rgba(0,0,0,0.8); z-index: 2;
+    position: absolute; left: calc(16px + env(safe-area-inset-left, 0px)); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); right: 80px;
+    color: #f5f1e6; font-size: 13.5px; text-shadow: 0 1px 4px rgba(0,0,0,0.8); z-index: 2;
   }
 </style>
 </head>
