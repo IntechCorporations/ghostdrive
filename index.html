@@ -841,10 +841,36 @@ function enterVault() {
   resumePendingUploads();
 }
 
-/* ---------------- Vault crypto material: created on first login, reused after ---------------- */
+/* ---------------- Vault crypto material: created on first login, reused after ----------------
+   The master key is kept wrapped under up to two independent keys at once:
+   `wrapped_mk`/`kdf_salt` (the password slot -- used by signup, sign-in, and
+   password reset) and `google_wrapped_mk`/`google_kdf_salt` (a second,
+   completely separate wrapping under the stable Google-account secret, for
+   accounts that sign in with Google). They're deliberately not the same
+   slot: earlier, a Google account's *only* wrapping was that Google secret
+   masquerading as its "password", so the moment someone used "Forgot
+   password" (which only ever knows how to rewrap the single password slot),
+   the Google-derived wrapping was silently overwritten and "Continue with
+   Google" broke for good -- with no way back in except that new password.
+   Every password-based unlock below now backfills the Google slot whenever
+   it's missing (a pre-existing account, or one a password reset already
+   broke), so this is also a self-repair: one ordinary password sign-in is
+   enough to fix Google sign-in for that account again from then on. */
+function backfillGoogleWrapIfNeeded(user, mk, vaultRow) {
+  if (!isGoogleUser(user)) return Promise.resolve();
+  if (vaultRow && vaultRow.google_wrapped_mk) return Promise.resolve();
+  var gSalt = newSalt();
+  var gKek = deriveKey(googleAccountSecret(user.id), gSalt);
+  return sb.from("vaults").update({
+    google_wrapped_mk: toB64(encryptBytes(gKek, mk)),
+    google_kdf_salt: gSalt,
+  }).eq("user_id", user.id);
+}
 function ensureVaultAndUnlock(password) {
+  var theUser;
   return sb.auth.getUser().then(function (res) {
     var user = res.data.user;
+    theUser = user;
     state.userId = user.id;
     state.email = user.email;
     return sb.from("vaults").select("*").eq("user_id", user.id).maybeSingle();
@@ -864,17 +890,66 @@ function ensureVaultAndUnlock(password) {
       var recoveryKek = deriveKey(recoverySecret, recoverySalt);
       var recoveryWrappedMK = toB64(encryptBytes(recoveryKek, mk));
 
-      return sb.from("vaults").insert({
+      var insertRow = {
         user_id: state.userId, kdf_salt: kdfSalt, wrapped_mk: wrappedMK,
         recovery_secret: recoverySecret, recovery_salt: recoverySalt, recovery_wrapped_mk: recoveryWrappedMK,
-      }).then(function (res2) {
+      };
+      // A Google account gets its own independent wrapping from the moment
+      // the vault first exists, so a later password change or reset (which
+      // only ever touches the two fields above) can never orphan it again.
+      if (isGoogleUser(theUser)) {
+        var gSalt = newSalt();
+        var gKek = deriveKey(googleAccountSecret(theUser.id), gSalt);
+        insertRow.google_wrapped_mk = toB64(encryptBytes(gKek, mk));
+        insertRow.google_kdf_salt = gSalt;
+      }
+
+      return sb.from("vaults").insert(insertRow).then(function (res2) {
         if (res2.error) throw res2.error;
         state.masterKey = mk;
       });
     } else {
       var KEK2 = deriveKey(password, vaultRow.kdf_salt);
-      state.masterKey = decryptBytes(KEK2, fromB64(vaultRow.wrapped_mk)); // throws on wrong password
+      var mk2 = decryptBytes(KEK2, fromB64(vaultRow.wrapped_mk)); // throws on wrong password
+      state.masterKey = mk2;
+      backfillGoogleWrapIfNeeded(theUser, mk2, vaultRow).catch(function () {});
     }
+  });
+}
+
+/* Automatic unlock for a Google sign-in -- tries the dedicated Google
+   wrapping first, and falls back to treating the Google secret as if it
+   were the password slot's own key (how every account worked before dual
+   wrapping existed). If even that fails, the account's password slot has
+   genuinely been repointed at a real password since, and there's no way
+   back in via Google alone -- the caller falls back to the sign-in screen. */
+function ensureVaultAndUnlockGoogle(userId) {
+  var secret = googleAccountSecret(userId);
+  var theUser;
+  return sb.auth.getUser().then(function (res) {
+    theUser = res.data.user;
+    state.userId = theUser.id;
+    state.email = theUser.email;
+    return sb.from("vaults").select("*").eq("user_id", theUser.id).maybeSingle();
+  }).then(function (res) {
+    if (res.error) throw res.error;
+    var vaultRow = res.data;
+    if (!vaultRow) {
+      // First-ever sign-in for this account, via Google -- creates the
+      // vault the same way a password account would, using the Google
+      // secret as the "password" (see ensureVaultAndUnlock above), which
+      // also gives it its own dedicated Google wrapping right away.
+      return ensureVaultAndUnlock(secret);
+    }
+    if (vaultRow.google_wrapped_mk && vaultRow.google_kdf_salt) {
+      var KEK = deriveKey(secret, vaultRow.google_kdf_salt);
+      state.masterKey = decryptBytes(KEK, fromB64(vaultRow.google_wrapped_mk));
+      return;
+    }
+    var KEK2 = deriveKey(secret, vaultRow.kdf_salt);
+    var mk = decryptBytes(KEK2, fromB64(vaultRow.wrapped_mk)); // throws if the password slot is no longer Google-wrapped
+    state.masterKey = mk;
+    return backfillGoogleWrapIfNeeded(theUser, mk, vaultRow).catch(function () {});
   });
 }
 
@@ -1032,11 +1107,21 @@ $("#btn-set-new-password").addEventListener("click", function () {
     if (res.error) throw res.error;
     return sb.auth.getUser();
   }).then(function (res) {
-    state.userId = res.data.user.id;
-    state.email = res.data.user.email;
+    var user = res.data.user;
+    state.userId = user.id;
+    state.email = user.email;
     state.masterKey = mk;
     inPasswordRecovery = false;
-    enterVault();
+    // This just rewrapped the password slot around the new password -- if
+    // this is a Google-linked account, refresh its independent Google
+    // wrapping too (same underlying mk, just re-derived under a fresh
+    // salt), so this reset can't orphan "Continue with Google" the way a
+    // reset used to before dual wrapping existed.
+    var gSalt = newSalt();
+    var gKek = deriveKey(googleAccountSecret(user.id), gSalt);
+    var patch = isGoogleUser(user) ? { google_wrapped_mk: toB64(encryptBytes(gKek, mk)), google_kdf_salt: gSalt } : null;
+    var chain = patch ? sb.from("vaults").update(patch).eq("user_id", state.userId).catch(function () {}) : Promise.resolve();
+    return chain.then(function () { enterVault(); });
   }).catch(function (err) { errEl.textContent = friendlyError(err); });
 });
 
@@ -1126,18 +1211,17 @@ function boot() {
 
     // Signed in with Google on a device that hasn't unlocked the vault yet —
     // unlock (or create) it automatically, no extra prompt needed.
-    ensureVaultAndUnlock(googleAccountSecret(session.user.id)).then(enterVault).catch(function () {
-      // This can genuinely fail -- not just from a bad connection, but for
-      // real: if this account ever went through "Forgot password" (Google
-      // sign-in doesn't normally involve a password at all, but the
-      // recovery flow sets one and re-wraps the vault around it), the
-      // vault is no longer wrapped with the Google-derived key this tries
-      // first. That used to be an unrecoverable, full-page error; now it
-      // just falls back to the normal sign-in screen, prefilled with this
-      // account's email, so signing in with the password instead picks
-      // right back up.
+    ensureVaultAndUnlockGoogle(session.user.id).then(enterVault).catch(function () {
+      // This can still genuinely fail for an account whose password slot
+      // was repointed at a real password (e.g. via "Forgot password")
+      // *before* dual wrapping existed, and hasn't had a single password
+      // sign-in since to backfill its dedicated Google wrapping. That used
+      // to be an unrecoverable, full-page error; now it just falls back to
+      // the normal sign-in screen, prefilled with this account's email --
+      // and signing in with the password instead both gets you in AND
+      // repairs Google sign-in for this account from then on.
       showAuthScreen(session.user.email);
-      $("#login-error").textContent = "Couldn't unlock your vault with Google sign-in. If you've set a password for this account (e.g. through “Forgot password”), sign in with your email and password instead.";
+      $("#login-error").textContent = "Couldn't unlock your vault with Google sign-in. If you've set a password for this account (e.g. through “Forgot password”), sign in with your email and password instead — that also fixes Google sign-in for next time.";
     });
   }).catch(function (err) {
     document.body.innerHTML = '<div style="padding:40px;font-family:sans-serif;color:#a13f36">Could not initialize the encryption engine: ' + friendlyError(err) + '</div>';
@@ -3231,4 +3315,6 @@ boot();
 
 })();
 
-</script></body></html>
+</script>
+</body>
+</html>

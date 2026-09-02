@@ -20,6 +20,21 @@ var BUCKET = "ghostdrive";
 self.addEventListener("install", function (event) { self.skipWaiting(); });
 self.addEventListener("activate", function (event) { event.waitUntil(self.clients.claim()); });
 
+// GitHub Pages sends a Cache-Control on index.html that lets the browser
+// reuse a several-minutes-old copy on a normal navigation (closing and
+// reopening a tab, typing the URL again) without even checking the server --
+// only an actual hard refresh bypasses that. That's meant nobody testing
+// right after a deploy went out was reliably seeing it: a just-shipped fix
+// could silently still not be running. Forcing every navigation to the app
+// itself to skip the HTTP cache closes that gap for good, with no more
+// reliance on remembering to hard-refresh. Everything else this page loads
+// (fonts, the Supabase/exifr CDN scripts) is left completely alone.
+self.addEventListener("fetch", function (event) {
+  if (event.request.mode === "navigate") {
+    event.respondWith(fetch(event.request, { cache: "no-store" }).catch(function () { return fetch(event.request); }));
+  }
+});
+
 function openDb() {
   return new Promise(function (resolve, reject) {
     var req = indexedDB.open(UPLOAD_DB_NAME, 1);
