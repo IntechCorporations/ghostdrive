@@ -58,6 +58,14 @@
     background: var(--brass-tint); color: var(--text); font-size: 13px; text-align: center;
     padding: 9px 16px; border-bottom: 1px solid var(--line); line-height: 1.5;
   }
+
+  .theme-toggle-btn {
+    position: fixed; top: 14px; right: 16px; z-index: 60; width: 34px; height: 34px;
+    border-radius: 50%; border: 1px solid var(--line); background: var(--ink-2); color: var(--text);
+    font-size: 16px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+  }
+  .theme-toggle-btn:hover { border-color: var(--brass); color: var(--brass); }
   .demo-banner strong { color: var(--brass-strong); }
   .demo-banner a { font-size: 12px; }
 
@@ -286,7 +294,7 @@
     display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none;
   }
   .reels-overlay.hidden { display: none; }
-  #reels-video { max-width: 100%; max-height: 100%; height: 100%; width: auto; object-fit: contain; background: #000; }
+  #reels-video { max-width: 100%; max-height: 100%; height: 100%; width: auto; object-fit: contain; background: #000; will-change: transform; }
   .reels-empty { color: #f0ece0; font-size: 15px; }
   .reels-icon-btn {
     background: rgba(20,18,12,0.55); border: 1px solid rgba(245,241,230,0.35); color: #f5f1e6;
@@ -309,6 +317,8 @@
 <div class="demo-banner" id="cloud-banner">
   Ghostdrive stores everything encrypted in your own Supabase project — your files, filenames, and dates leave this browser only as ciphertext.
 </div>
+
+<button type="button" id="btn-theme-toggle" class="theme-toggle-btn" title="Switch to light mode" aria-label="Switch to light mode">&#9789;</button>
 
 <div id="app">
 
@@ -583,6 +593,33 @@ function friendlyError(err) {
   return msg.length > 140 ? "Something went wrong. Please try again." : msg;
 }
 
+/* ---------------- Theme -- dark by default, with a manual toggle ----------------
+   Runs first, before anything else on the page, so there's as little flash
+   of the wrong theme as possible. */
+var THEME_KEY = "ghostdrive-theme";
+function loadTheme() {
+  try {
+    var t = localStorage.getItem(THEME_KEY);
+    return (t === "light" || t === "dark") ? t : "dark"; // dark unless you've said otherwise
+  } catch (e) { return "dark"; }
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  var btn = $("#btn-theme-toggle");
+  if (!btn) return;
+  var switchingToLight = theme === "dark";
+  btn.innerHTML = switchingToLight ? "&#9728;" : "&#9789;";
+  btn.title = switchingToLight ? "Switch to light mode" : "Switch to dark mode";
+  btn.setAttribute("aria-label", btn.title);
+}
+var currentTheme = loadTheme();
+applyTheme(currentTheme);
+$("#btn-theme-toggle").addEventListener("click", function () {
+  currentTheme = currentTheme === "dark" ? "light" : "dark";
+  try { localStorage.setItem(THEME_KEY, currentTheme); } catch (e) {}
+  applyTheme(currentTheme);
+});
+
 var state = {
   userId: null,
   email: null,
@@ -821,8 +858,19 @@ $("#btn-set-new-password").addEventListener("click", function () {
   }).catch(function (err) { errEl.textContent = friendlyError(err); });
 });
 
-/* ---------------- Sign out ---------------- */
-$("#btn-lock").addEventListener("click", function () {
+/* ---------------- Sign out ----------------
+   Signing out revokes the session and wipes the master key from memory --
+   which used to also silently kill whatever this tab was actively
+   uploading (the session got pulled out from under it mid-transfer, and
+   since the tab hadn't been closed yet there was no "next open" for the
+   durable queue to resume from). Now, if anything is still actively
+   transferring when Sign out is clicked, it finishes that first: the
+   button switches to "Finishing uploads…" and the actual sign-out runs
+   the moment the last one lands. Closing the tab during that wait is
+   still perfectly safe either way -- the durable queue picks it up on
+   the next sign-in regardless. */
+var pendingSignOut = false;
+function performSignOut() {
   var email = state.email;
   state.masterKey = null;
   state.fileKeyCache.clear();
@@ -830,6 +878,24 @@ $("#btn-lock").addEventListener("click", function () {
   hideModal("#viewer-modal");
   clearDeviceKey();
   sb.auth.signOut().then(function () { showAuthScreen(email); });
+}
+function maybeFinishPendingSignOut() {
+  if (pendingSignOut && uploadsInFlight === 0) {
+    pendingSignOut = false;
+    $("#btn-lock").disabled = false;
+    $("#btn-lock").textContent = "Sign out";
+    performSignOut();
+  }
+}
+$("#btn-lock").addEventListener("click", function () {
+  if (uploadsInFlight > 0 && !pendingSignOut) {
+    pendingSignOut = true;
+    $("#btn-lock").disabled = true;
+    $("#btn-lock").textContent = "Finishing uploads…";
+    return;
+  }
+  if (pendingSignOut) return; // already waiting -- ignore extra clicks
+  performSignOut();
 });
 
 /* ---------------- Boot ---------------- */
@@ -960,6 +1026,7 @@ function completeUploadTrayRow(row, errorMsg) {
 function processFiles(files) {
   if (!files.length) return;
   var i = 0;
+  uploadsInFlight += files.length; // whole batch counts as "in flight" until every file settles
   function next() {
     if (i >= files.length) return;
     var file = files[i];
@@ -977,13 +1044,15 @@ function processFiles(files) {
         completeUploadTrayRow(row, null);
         logUploadResult(file.name, file.size, true, null);
         refreshGallery();
-        i++;
-        next();
       })
       .catch(function (err) {
         console.error("upload failed", err);
         completeUploadTrayRow(row, friendlyError(err));
         logUploadResult(file.name, file.size, false, friendlyError(err));
+      })
+      .then(function () {
+        uploadsInFlight--;
+        maybeFinishPendingSignOut();
         i++;
         next();
       });
@@ -1501,6 +1570,15 @@ function uploadQueueEntry(entry, onProgress) {
     });
 }
 
+// How many uploads are still part of an active run in THIS tab right now
+// -- either transferring this instant or simply queued up behind one that
+// is, within the batch that's currently going (a multi-file selection, or
+// a resumePendingUploads() pass). Signing out has to know about this: it
+// used to revoke the session out from under whatever was still running,
+// which is what was silently breaking an in-progress transfer -- see the
+// btn-lock handler below.
+var uploadsInFlight = 0;
+
 // Called once the vault is unlocked, so anything left in the queue from a
 // tab that got closed (or a browser that crashed) mid-upload picks back up
 // automatically -- no re-selecting files needed.
@@ -1508,6 +1586,7 @@ function resumePendingUploads() {
   queueGetAll().then(function (entries) {
     if (!entries.length) return;
     var i = 0;
+    uploadsInFlight += entries.length;
     function next() {
       if (i >= entries.length) return;
       var entry = entries[i];
@@ -1522,7 +1601,12 @@ function resumePendingUploads() {
           completeUploadTrayRow(row, friendlyError(err));
           logUploadResult(entry.fileName, entry.fileSize, false, friendlyError(err));
         })
-        .then(function () { i++; next(); });
+        .then(function () {
+          uploadsInFlight--;
+          maybeFinishPendingSignOut();
+          i++;
+          next();
+        });
     }
     next();
   }).catch(function () {});
@@ -2292,6 +2376,8 @@ function showReelAt(i) {
 
   var video = $("#reels-video");
   video.pause();
+  video.style.transition = "none";
+  video.style.transform = "translateY(0)";
   $("#reels-info").textContent = reelInfoText(id);
 
   loadReelVideo(id).then(function (url) {
@@ -2331,7 +2417,9 @@ $("#btn-reels-close").addEventListener("click", closeReels);
 $("#btn-reels-next").addEventListener("click", reelsNext);
 $("#btn-reels-prev").addEventListener("click", reelsPrev);
 
+var reelsSuppressNextClick = false;
 $("#reels-video").addEventListener("click", function () {
+  if (reelsSuppressNextClick) { reelsSuppressNextClick = false; return; }
   var video = $("#reels-video");
   if (video.paused) video.play().catch(function () {}); else video.pause();
 });
@@ -2357,19 +2445,51 @@ $("#btn-reels-shuffle").addEventListener("click", function () {
   }
 });
 
-/* Vertical swipe (touch) and scroll-wheel navigation, TikTok-style. */
-var reelsTouchStartY = null;
+/* Vertical swipe (touch) and scroll-wheel navigation, TikTok-style -- the
+   video visibly follows your finger while dragging (with a little
+   resistance, like the real thing), then either snaps on to the next/
+   previous video or springs back if you didn't drag far enough. */
+var REELS_SWIPE_COMMIT_PX = 70;
+var REELS_DRAG_RESISTANCE = 0.55;
+var reelsDrag = null; // { startY, lastY, moved }
+
+function reelsSetDragTransform(px) {
+  var video = $("#reels-video");
+  video.style.transition = "none";
+  video.style.transform = "translateY(" + px + "px)";
+}
+function reelsResetDragTransform() {
+  var video = $("#reels-video");
+  video.style.transition = "transform 0.22s cubic-bezier(.2,.7,.3,1)";
+  video.style.transform = "translateY(0)";
+}
+
 $("#reels-modal").addEventListener("touchstart", function (e) {
-  if (e.touches.length !== 1) return;
-  reelsTouchStartY = e.touches[0].clientY;
+  if (e.touches.length !== 1) { reelsDrag = null; return; }
+  reelsDrag = { startY: e.touches[0].clientY, lastY: e.touches[0].clientY, moved: false };
 }, { passive: true });
-$("#reels-modal").addEventListener("touchend", function (e) {
-  if (reelsTouchStartY === null) return;
-  var endY = (e.changedTouches && e.changedTouches[0] && e.changedTouches[0].clientY);
-  var dy = endY === undefined ? 0 : reelsTouchStartY - endY;
-  reelsTouchStartY = null;
-  if (Math.abs(dy) < 40) return;
-  if (dy > 0) reelsNext(); else reelsPrev();
+
+$("#reels-modal").addEventListener("touchmove", function (e) {
+  if (!reelsDrag || e.touches.length !== 1) return;
+  e.preventDefault(); // fully own the gesture -- no native scroll/bounce fighting it
+  reelsDrag.lastY = e.touches[0].clientY;
+  var dy = reelsDrag.lastY - reelsDrag.startY;
+  if (Math.abs(dy) > 6) reelsDrag.moved = true;
+  reelsSetDragTransform(dy * REELS_DRAG_RESISTANCE);
+}, { passive: false });
+
+$("#reels-modal").addEventListener("touchend", function () {
+  if (!reelsDrag) return;
+  var dy = reelsDrag.lastY - reelsDrag.startY;
+  var wasSwipe = reelsDrag.moved && Math.abs(dy) >= REELS_SWIPE_COMMIT_PX;
+  reelsSuppressNextClick = reelsDrag.moved;
+  reelsDrag = null;
+  reelsResetDragTransform();
+  if (wasSwipe) { if (dy < 0) reelsNext(); else reelsPrev(); }
+});
+$("#reels-modal").addEventListener("touchcancel", function () {
+  reelsDrag = null;
+  reelsResetDragTransform();
 });
 
 var reelsWheelLocked = false;
