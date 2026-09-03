@@ -7,7 +7,6 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
 <style>
   :root {
     --ink: #f5f3ee;
@@ -308,7 +307,7 @@
         <div class="header-actions">
           <label class="upload-btn">
             <button type="button" id="btn-choose-files">+ Add photos &amp; videos</button>
-            <input type="file" id="file-input" accept="image/*,video/*,.cr2,.cr3,.nef,.arw,.dng,.orf,.rw2,.raf,.pef,.srw,.heic,.heif,.zip" multiple hidden>
+            <input type="file" id="file-input" accept="image/*,video/*,.cr2,.cr3,.nef,.arw,.dng,.orf,.rw2,.raf,.pef,.srw,.heic,.heif" multiple hidden>
           </label>
           <button type="button" id="btn-import-google-photos" class="secondary">Import from Google Photos</button>
           <button id="btn-lock">Sign out</button>
@@ -436,132 +435,6 @@ function decryptBytes(key, combined) {
 function encryptText(key, text) { return encryptBytes(key, new TextEncoder().encode(text)); }
 function decryptText(key, combined) { return new TextDecoder().decode(decryptBytes(key, combined)); }
 
-/* ---------------- Chunked encryption container ----------------
-   Large files are encrypted in fixed-size plaintext chunks rather than all
-   at once, so a multi-GB video never has to sit fully in memory. Each
-   chunk is its own independent secretbox (own nonce), framed with a
-   4-byte little-endian length prefix so the reader doesn't need to guess
-   ciphertext-chunk boundaries:
-     [uint32 len][len bytes: nonce(24) + ciphertext+MAC] [uint32 len][...] ...
-   This framing is also exactly what lines up with R2 multipart parts: one
-   frame == one uploaded part (except the very last, undersized part). */
-function encryptChunkFrame(key, plainChunk) {
-  var encrypted = encryptBytes(key, plainChunk); // nonce + ciphertext, see encryptBytes()
-  var frame = new Uint8Array(4 + encrypted.length);
-  new DataView(frame.buffer).setUint32(0, encrypted.length, true);
-  frame.set(encrypted, 4);
-  return frame;
-}
-// Parses every complete frame out of `buf` (a Uint8Array of one or more
-// concatenated frames), decrypts each with `key`, and returns an array of
-// plaintext Uint8Arrays in order -- suitable for passing straight to
-// `new Blob(parts)` without an extra concatenation copy.
-function decryptFramedBuffer(key, buf) {
-  var out = [];
-  var offset = 0;
-  var view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  while (offset + 4 <= buf.length) {
-    var len = view.getUint32(offset, true);
-    offset += 4;
-    if (offset + len > buf.length) break; // truncated/incomplete frame, stop
-    var encrypted = buf.subarray(offset, offset + len);
-    out.push(decryptBytes(key, encrypted));
-    offset += len;
-  }
-  return out;
-}
-
-/* ---------------- R2 Worker client ----------------
-   Every call goes through the Cloudflare Worker (R2_WORKER_URL), which
-   holds the actual R2 API credentials -- this page only ever sends the
-   shared auth header. */
-function r2Fetch(path, opts) {
-  opts = opts || {};
-  opts.headers = Object.assign({ "X-Auth": R2_AUTH_SECRET }, opts.headers || {});
-  return fetch(R2_WORKER_URL + path, opts).then(function (r) {
-    if (!r.ok) return r.text().then(function (t) { throw new Error("Storage error (" + r.status + "): " + t.slice(0, 200)); });
-    return r;
-  });
-}
-function r2Get(path) {
-  return r2Fetch("/object?path=" + encodeURIComponent(path)).then(function (r) { return r.arrayBuffer(); });
-}
-function r2PutSmall(path, bytes) {
-  return r2Fetch("/object?path=" + encodeURIComponent(path), { method: "PUT", body: bytes });
-}
-function r2Delete(path) {
-  return r2Fetch("/object?path=" + encodeURIComponent(path), { method: "DELETE" });
-}
-
-// Encrypts + uploads `file` to R2 at `path` in fixed-size chunks, each sent
-// as its own multipart part -- keeps memory flat regardless of file size
-// and gives real byte-level progress via onProgress(loaded, total).
-function r2UploadEncryptedChunked(path, file, fileKey, onProgress) {
-  var total = file.size;
-  var loaded = 0;
-  if (onProgress) onProgress(0, total);
-
-  // Small files: skip multipart entirely, one plain PUT is simpler and R2
-  // multipart requires a minimum part size we might not even reach.
-  if (total <= CHUNK_PLAIN_SIZE) {
-    return file.arrayBuffer().then(function (buf) {
-      var frame = encryptChunkFrame(fileKey, new Uint8Array(buf));
-      return r2PutSmall(path, frame);
-    }).then(function () { if (onProgress) onProgress(total, total); });
-  }
-
-  var uploadId;
-  var parts = [];
-  return r2Fetch("/mpu/create", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: path }),
-  }).then(function (r) { return r.json(); }).then(function (res) {
-    uploadId = res.uploadId;
-    var offset = 0;
-    var partNumber = 0;
-    function nextPart() {
-      if (offset >= total) return Promise.resolve();
-      partNumber++;
-      var end = Math.min(offset + CHUNK_PLAIN_SIZE, total);
-      var slice = file.slice(offset, end);
-      return slice.arrayBuffer().then(function (buf) {
-        var frame = encryptChunkFrame(fileKey, new Uint8Array(buf));
-        return r2Fetch(
-          "/mpu/part?path=" + encodeURIComponent(path) + "&uploadId=" + encodeURIComponent(uploadId) + "&partNumber=" + partNumber,
-          { method: "PUT", body: frame }
-        );
-      }).then(function (r) { return r.json(); }).then(function (res2) {
-        parts.push({ partNumber: partNumber, etag: res2.etag });
-        loaded = end;
-        if (onProgress) onProgress(loaded, total);
-        offset = end;
-        return nextPart();
-      });
-    }
-    return nextPart();
-  }).then(function () {
-    return r2Fetch("/mpu/complete", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: path, uploadId: uploadId, parts: parts }),
-    });
-  }).catch(function (err) {
-    if (uploadId) {
-      r2Fetch("/mpu/abort", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: path, uploadId: uploadId }),
-      }).catch(function () {});
-    }
-    throw err;
-  });
-}
-// Downloads and decrypts a chunked-encrypted object back into a Blob.
-function r2DownloadDecrypted(path, fileKey, mime) {
-  return r2Get(path).then(function (buf) {
-    var parts = decryptFramedBuffer(fileKey, new Uint8Array(buf));
-    return new Blob(parts, { type: mime || "application/octet-stream" });
-  });
-}
-
 /* ============================================================
    UI plumbing
    ============================================================ */
@@ -598,21 +471,6 @@ var GOOGLE_OAUTH_CLIENT_ID = "575534631616-ghbo58m8qcol1s8ne9fahao4276ppplq.apps
 var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 var BUCKET = "ghostdrive";
 var SESSION_KEY = "ghostdrive-device-key"; // caches the *unwrapped master key*, not the password
-
-// File content (and thumbnails) live in Cloudflare R2 instead of Supabase
-// Storage -- Supabase's per-project file size cap made it a poor fit for
-// multi-GB video. The `objects` table in Supabase still holds the metadata
-// row for each item; only the encrypted bytes moved to R2. All R2 access
-// goes through a small Cloudflare Worker (see ghostdrive-r2-worker.js) that
-// holds the actual R2 credentials -- the browser never sees them.
-var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev"; // set after deploying the Worker
-var R2_AUTH_SECRET = "oH2CAcRsb9Lctw8cWOVq7TeuaY6vk0Y6axj88Mqfeyw"; // must match SHARED_SECRET set on the Worker
-// Plaintext is encrypted in fixed-size chunks so multi-GB files never sit
-// fully in memory at once, and so upload can go out as R2 multipart parts.
-// R2/S3 multipart rules require every part but the last to be >= 5MiB;
-// 8MiB of plaintext plus the ~40 bytes of encryption overhead comfortably
-// clears that.
-var CHUNK_PLAIN_SIZE = 8 * 1024 * 1024;
 
 /* ---------------- Device-local session cache ----------------
    Supabase's own session (the JWT) persists across reloads on its
@@ -957,49 +815,7 @@ function completeUploadTrayRow(row, errorMsg) {
   }, errorMsg ? 6000 : 1500);
 }
 
-/* A zip is never uploaded as one opaque blob -- it's unpacked client-side
-   (via fflate) into its individual files first, and each of those goes
-   through the exact same per-file encrypt-and-upload pipeline as if it had
-   been dropped in on its own. That keeps the gallery browsable (each photo
-   or video inside is its own item) instead of hiding everything behind a
-   single unreadable zip entry.
-   NOTE: the whole zip is read into memory to unpack it (fflate has no
-   streaming unzip in the browser build used here), so this works well for
-   zips of photos/clips but isn't meant for zips that are themselves
-   multi-GB -- individual large videos should just be dropped in directly. */
-function expandZipFile(zipFile) {
-  return zipFile.arrayBuffer().then(function (buf) {
-    var entries = fflate.unzipSync(new Uint8Array(buf));
-    var out = [];
-    Object.keys(entries).forEach(function (name) {
-      if (name.charAt(name.length - 1) === "/") return; // directory entry
-      var base = name.split("/").pop();
-      if (!base) return;
-      out.push(new File([entries[name]], base, { lastModified: zipFile.lastModified }));
-    });
-    return out;
-  });
-}
-function expandZips(files) {
-  var tasks = files.map(function (file) {
-    var isZip = file.type === "application/zip" || /\.zip$/i.test(file.name);
-    if (!isZip) return Promise.resolve([file]);
-    return expandZipFile(file).catch(function (err) {
-      console.error("zip extraction failed", err);
-      return []; // drop the bad zip rather than uploading it as-is
-    });
-  });
-  return Promise.all(tasks).then(function (groups) {
-    return groups.reduce(function (acc, g) { return acc.concat(g); }, []);
-  });
-}
-
 function processFiles(files) {
-  if (!files.length) return;
-  expandZips(files).then(function (expanded) { processExpandedFiles(expanded); });
-}
-
-function processExpandedFiles(files) {
   if (!files.length) return;
   var rows = files.map(function (file) { return { file: file, el: addUploadTrayRow(file) }; });
   var i = 0;
@@ -1251,6 +1067,38 @@ function formatDuration(sec) {
   return m + ":" + String(s).padStart(2, "0");
 }
 
+/* Uploads straight to the Supabase Storage REST endpoint via XMLHttpRequest
+   instead of the supabase-js helper, purely to get real byte-level progress
+   from xhr.upload.onprogress (supabase-js's storage.upload() doesn't expose
+   this). Same endpoint/headers storage-js itself uses under the hood. */
+function storageUploadXHR(path, blob, onProgress) {
+  return sb.auth.getSession().then(function (res) {
+    var token = (res.data.session && res.data.session.access_token) || SUPABASE_ANON_KEY;
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", SUPABASE_URL + "/storage/v1/object/" + BUCKET + "/" + path);
+      xhr.setRequestHeader("Authorization", "Bearer " + token);
+      xhr.setRequestHeader("apikey", SUPABASE_ANON_KEY);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.setRequestHeader("x-upsert", "false");
+      // A large video with a stalled/dropped connection would otherwise sit
+      // "uploading" forever with no error -- bound it so it fails visibly
+      // instead. 10 minutes is generous for even a large file on a slow link.
+      xhr.timeout = 10 * 60 * 1000;
+      if (onProgress) {
+        xhr.upload.onprogress = function (e) { if (e.lengthComputable) onProgress(e.loaded, e.total); };
+      }
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 300) { if (onProgress) onProgress(blob.size, blob.size); resolve(); }
+        else reject(new Error("Upload failed (" + xhr.status + "): " + xhr.responseText.slice(0, 140)));
+      };
+      xhr.onerror = function () { reject(new Error("Network error during upload.")); };
+      xhr.ontimeout = function () { reject(new Error("Upload timed out. Check your connection and try again.")); };
+      xhr.send(blob);
+    });
+  });
+}
+
 function makeThumbnail(file, kind) {
   var MAX = 320;
   if (kind === "photo") {
@@ -1307,15 +1155,18 @@ function uploadOneFile(file, onProgress) {
   var thumbPath = null;
   var thumbInfo = { blob: null, duration: null };
 
-  return r2UploadEncryptedChunked(contentPath, file, fileKey, onProgress).then(function () {
+  return file.arrayBuffer().then(function (buf) {
+    var encryptedContent = encryptBytes(fileKey, new Uint8Array(buf));
+    return storageUploadXHR(contentPath, new Blob([encryptedContent]), onProgress);
+  }).then(function () {
     return makeThumbnail(file, kind).catch(function () { return { blob: null, duration: null }; });
   }).then(function (info) {
     thumbInfo = info || { blob: null, duration: null };
     if (!thumbInfo.blob) return null;
     return thumbInfo.blob.arrayBuffer().then(function (tb) {
-      var frame = encryptChunkFrame(fileKey, new Uint8Array(tb));
+      var encryptedThumb = encryptBytes(fileKey, new Uint8Array(tb));
       thumbPath = state.userId + "/" + id + "/thumb";
-      return r2PutSmall(thumbPath, frame);
+      return storageUploadXHR(thumbPath, new Blob([encryptedThumb]));
     });
   }).then(function () {
     // The date starts out as the file's own timestamp (or "now," for a
@@ -1608,8 +1459,13 @@ function loadThumbnail(record) {
   if (thumbUrlCache.has(record.id)) return Promise.resolve(thumbUrlCache.get(record.id));
   var fileKey = state.fileKeyCache.get(record.id);
   if (!fileKey || !record.thumbnail_path) return Promise.resolve(null);
-  return r2DownloadDecrypted(record.thumbnail_path, fileKey, "image/jpeg").then(function (blob) {
-    var url = URL.createObjectURL(blob);
+  return sb.storage.from(BUCKET).download(record.thumbnail_path).then(function (res) {
+    if (res.error) return null;
+    return res.data.arrayBuffer();
+  }).then(function (buf) {
+    if (!buf) return null;
+    var plain = decryptBytes(fileKey, new Uint8Array(buf));
+    var url = URL.createObjectURL(new Blob([plain], { type: "image/jpeg" }));
     thumbUrlCache.set(record.id, url);
     return url;
   }).catch(function () { return null; });
@@ -1634,8 +1490,13 @@ function openViewer(id) {
     showModal("#viewer-modal");
     updateViewerNavButtons();
 
-    return r2DownloadDecrypted(record.content_path, viewerState.fileKey, viewerState.metaJson.mime);
-  }).then(function (blob) {
+    return sb.storage.from(BUCKET).download(record.content_path);
+  }).then(function (res) {
+    if (res.error) throw res.error;
+    return res.data.arrayBuffer();
+  }).then(function (buf) {
+    var plain = decryptBytes(viewerState.fileKey, new Uint8Array(buf));
+    var blob = new Blob([plain], { type: viewerState.metaJson.mime || "application/octet-stream" });
     var url = URL.createObjectURL(blob);
     viewerState.mediaUrl = url;
 
@@ -1715,7 +1576,7 @@ $("#btn-viewer-delete").addEventListener("click", function () {
     record = res.data;
     var paths = [record.content_path];
     if (record.thumbnail_path) paths.push(record.thumbnail_path);
-    return Promise.all(paths.map(function (p) { return r2Delete(p).catch(function () {}); }));
+    return sb.storage.from(BUCKET).remove(paths);
   }).then(function () {
     return sb.from("objects").delete().eq("id", id);
   }).then(function () {
