@@ -335,12 +335,75 @@
 
   /* Video viewer, sized and framed like macOS Quick Look: large, centered,
      floating over a dark backdrop rather than boxed into the same small
-     frame as a photo + its metadata form. */
-  .modal-content.video-mode { max-width: min(94vw, 1280px); background: #0b0b0d; }
+     frame as a photo + its metadata form. No filename/date/folder fields
+     either -- just the video, the way Preview shows a file: one big
+     screen, nothing else competing for attention. */
+  .modal-content.video-mode { max-width: min(94vw, 1280px); background: #0b0b0d; padding: 0; }
   .modal-content.video-mode #viewer-media video {
     max-width: min(90vw, 1180px); max-height: 78vh; width: auto; height: auto;
     border-radius: 10px; background: #000; box-shadow: 0 30px 90px rgba(0,0,0,0.55);
   }
+  .modal-content.video-mode #viewer-media img.viewer-poster {
+    max-width: min(90vw, 1180px); max-height: 78vh; border-radius: 10px;
+  }
+  .modal-content.video-mode .viewer-meta { display: none; }
+  .modal-content.video-mode #viewer-media { margin: 0; }
+  .viewer-video-delete {
+    display: none; position: absolute; top: 12px; right: 56px; z-index: 3;
+    background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
+    border-radius: 50%; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .viewer-video-delete:hover { background: var(--danger); }
+  .viewer-video-delete svg { width: 17px; height: 17px; }
+  .modal-content.video-mode .viewer-video-delete { display: flex; }
+  .modal-content.video-mode .modal-close { color: #f5f1e6; background: rgba(20,18,12,0.55); border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; top: 12px; right: 14px; }
+  .viewer-video-trim {
+    display: none; position: absolute; top: 12px; right: 98px; z-index: 3;
+    background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
+    border-radius: 50%; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .viewer-video-trim:hover { background: var(--brass); color: #1c1406; }
+  .viewer-video-trim svg { width: 17px; height: 17px; }
+  .modal-content.video-mode .viewer-video-trim { display: flex; }
+
+  /* ---------------- Photo crop ---------------- */
+  .crop-overlay { position: absolute; inset: 0; z-index: 4; }
+  .crop-overlay.hidden { display: none; }
+  .crop-box {
+    position: absolute; border: 2px solid #fff; cursor: move;
+    box-shadow: 0 0 0 2000px rgba(0,0,0,0.55); /* dims everything outside the box */
+  }
+  .crop-handle {
+    position: absolute; width: 14px; height: 14px; background: #fff; border-radius: 50%;
+    margin: -7px; border: 2px solid var(--brass);
+  }
+  .crop-handle[data-handle="nw"] { top: 0; left: 0; cursor: nwse-resize; }
+  .crop-handle[data-handle="ne"] { top: 0; right: 0; margin-right: -7px; cursor: nesw-resize; }
+  .crop-handle[data-handle="sw"] { bottom: 0; left: 0; margin-bottom: -7px; cursor: nesw-resize; }
+  .crop-handle[data-handle="se"] { bottom: 0; right: 0; margin-right: -7px; margin-bottom: -7px; cursor: nwse-resize; }
+  .crop-actions { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
+  .crop-actions.hidden { display: none; }
+
+  /* ---------------- Video trim ---------------- */
+  .trim-bar {
+    position: absolute; left: 5%; right: 5%; bottom: 3%; z-index: 3;
+    background: rgba(11,11,13,0.88); border-radius: 10px; padding: 12px 16px;
+  }
+  .trim-bar.hidden { display: none; }
+  .trim-bar-track { position: relative; height: 6px; border-radius: 3px; background: rgba(245,241,230,0.25); margin-bottom: 10px; }
+  .trim-range-fill { position: absolute; top: 0; bottom: 0; background: var(--brass); border-radius: 3px; }
+  .trim-handle {
+    position: absolute; top: 50%; width: 16px; height: 16px; background: var(--brass);
+    border-radius: 50%; transform: translate(-50%, -50%); cursor: ew-resize; border: 2px solid #fff;
+  }
+  .trim-actions { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+  .trim-duration-label { color: #f5f1e6; font-size: 12.5px; font-family: var(--mono); margin-right: auto; }
+
+  .viewer-loading-bar-track {
+    position: absolute; left: 20%; bottom: 8%; width: 60%; height: 4px; border-radius: 2px;
+    background: rgba(245,241,230,0.22); overflow: hidden;
+  }
+  .viewer-loading-bar-fill { height: 100%; width: 0%; background: var(--brass); transition: width 0.15s linear; }
 
   #upload-status { min-height: 16px; font-family: var(--mono); font-size: 12.5px; }
 
@@ -633,7 +696,37 @@
       <button class="modal-close" id="btn-viewer-close">&times;</button>
       <button class="modal-nav modal-prev" id="btn-viewer-prev" aria-label="Previous">&#8249;</button>
       <button class="modal-nav modal-next" id="btn-viewer-next" aria-label="Next">&#8250;</button>
+      <button class="viewer-video-delete danger" id="btn-viewer-delete-video" title="Delete" aria-label="Delete">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      </button>
+      <button class="viewer-video-trim" id="btn-viewer-trim" title="Trim" aria-label="Trim">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"/></svg>
+      </button>
+      <div id="trim-bar" class="trim-bar hidden">
+        <div class="trim-bar-track">
+          <div id="trim-range-fill" class="trim-range-fill"></div>
+          <div id="trim-handle-start" class="trim-handle" data-handle="start"></div>
+          <div id="trim-handle-end" class="trim-handle" data-handle="end"></div>
+        </div>
+        <div class="trim-actions">
+          <span id="trim-duration-label" class="trim-duration-label"></span>
+          <button id="btn-trim-cancel" class="secondary">Cancel</button>
+          <button id="btn-trim-apply">Apply trim</button>
+        </div>
+      </div>
       <div id="viewer-media"></div>
+      <div id="crop-overlay" class="crop-overlay hidden">
+        <div id="crop-box" class="crop-box">
+          <div class="crop-handle" data-handle="nw"></div>
+          <div class="crop-handle" data-handle="ne"></div>
+          <div class="crop-handle" data-handle="sw"></div>
+          <div class="crop-handle" data-handle="se"></div>
+        </div>
+      </div>
+      <div id="crop-actions" class="crop-actions hidden">
+        <button id="btn-crop-cancel" class="secondary">Cancel</button>
+        <button id="btn-crop-apply">Apply crop</button>
+      </div>
       <div class="viewer-meta">
         <input type="text" id="viewer-filename" placeholder="(unnamed)">
         <label>Date
@@ -645,6 +738,7 @@
         <datalist id="folder-suggestions"></datalist>
         <p class="hint" style="margin-top: -4px;">Edit any of this like a normal field — filename, date, folder. It's stored encrypted either way. Type a new folder name to move it there.</p>
         <div class="viewer-actions">
+          <button id="btn-viewer-crop" class="secondary hidden">Crop</button>
           <button id="btn-viewer-save">Save</button>
           <button id="btn-viewer-delete" class="danger">Delete</button>
         </div>
@@ -1918,9 +2012,29 @@ function expandZips(files) {
   });
 }
 
+// A Live Photo arrives as two separate files with the same base name --
+// a still (HEIC/JPG) and a short .mov clip -- since that's how iOS/macOS
+// actually exports or shares them; there's no single-file "Live Photo"
+// format to detect instead. Uploading both would show the same moment
+// twice in the gallery as an unrelated photo and video, so any still
+// that has a matching .mov alongside it is dropped in favor of just the
+// video -- which already carries a usable poster frame for its thumbnail,
+// so nothing about the visual is actually lost.
+function detectLivePhotoPairs(files) {
+  var baseName = function (name) { return name.replace(/\.[^.]+$/, "").toLowerCase(); };
+  var movBaseNames = new Set(
+    files.filter(function (f) { return VIDEO_EXTENSIONS.indexOf(fileExt(f.name)) !== -1 && fileExt(f.name) === "mov"; })
+      .map(function (f) { return baseName(f.name); })
+  );
+  return files.filter(function (f) {
+    var isStillImage = classifyFile(f) === "photo";
+    return !(isStillImage && movBaseNames.has(baseName(f.name)));
+  });
+}
+
 function processFiles(files) {
   if (!files.length) return;
-  expandZips(files).then(function (expanded) { processExpandedFiles(expanded); });
+  expandZips(files).then(function (expanded) { processExpandedFiles(detectLivePhotoPairs(expanded)); });
 }
 
 function processExpandedFiles(files) {
@@ -2552,7 +2666,18 @@ function uploadQueueEntry(entry, onProgress, signal) {
     })
     .then(function (res) {
       if (res.error) throw res.error;
-      return entry.stage === "prepared-large" ? null : queueDelete(entry.id);
+      // Always attempt this, regardless of stage: a plain drag-and-drop
+      // large upload was never durably queued in the first place, so this
+      // is a harmless no-op for it. A large upload that came from the
+      // resumable file picker (see pickResumableFiles) *was* durably
+      // queued under this same id the whole time it was uploading -- that
+      // queuePut never happened for it above (see the comment on
+      // runQueuedUpload), so this is the only place left that can clear
+      // it out. Skipping it here for every "prepared-large" entry used to
+      // mean a fully-finished resumable upload just sat in the queue
+      // forever, getting silently re-uploaded from scratch every time the
+      // app reopened.
+      return queueDelete(entry.id).catch(function () {});
     })
     .catch(function (err) {
       if (signal && signal.aborted) throw err; // a deliberate cancel -- nothing to retry, just surface it
@@ -2715,6 +2840,34 @@ function loadObjectMeta(record) {
   state.fileKeyCache.set(record.id, fileKey);
   var metaJson = JSON.parse(decryptText(fileKey, fromB64(record.encrypted_metadata)));
   return { fileKey: fileKey, metaJson: metaJson };
+}
+
+// Shared by crop (photos) and trim (videos): re-encrypts new content bytes
+// (and, if given, a new thumbnail) and overwrites the object's *existing*
+// content_path/thumbnail_path in place -- same fileKey as before, so
+// nothing about the database row's paths or wrapped key needs to change,
+// only the encrypted bytes sitting at those paths and whatever metadata
+// fields actually changed (dimensions, duration, size). Invalidates any
+// cached thumbnail/preview for this id so the edit shows up immediately
+// instead of a stale cached version lingering.
+function replaceObjectContent(record, fileKey, metaJson, newContentBlob, newThumbBlob, metaPatch) {
+  var patchedMeta = Object.assign({}, metaJson, metaPatch);
+  var encryptedMetadata = toB64(encryptBytes(fileKey, new TextEncoder().encode(JSON.stringify(patchedMeta))));
+  return newContentBlob.arrayBuffer().then(function (buf) {
+    return r2UploadFileEncrypted(record.content_path, new File([buf], "content"), fileKey, null);
+  }).then(function () {
+    if (!newThumbBlob || !record.thumbnail_path) return null;
+    return newThumbBlob.arrayBuffer().then(function (tb) {
+      return r2PutSmall(record.thumbnail_path, encryptChunkFrame(fileKey, new Uint8Array(tb)));
+    });
+  }).then(function () {
+    return sb.from("objects").update({ encrypted_metadata: encryptedMetadata }).eq("id", record.id);
+  }).then(function (res) {
+    if (res.error) throw res.error;
+    thumbUrlCache.delete(record.id);
+    galleryPreviewCache.delete(record.id);
+    return patchedMeta;
+  });
 }
 
 function dayKey(isoDate) {
@@ -3428,6 +3581,10 @@ function openViewer(id) {
     $("#viewer-filename").value = loaded.metaJson.name || "";
     $("#viewer-date").value = toDatetimeLocalValue(loaded.metaJson.date);
     $("#viewer-folder").value = loaded.metaJson.folder || "";
+    $("#btn-viewer-crop").classList.add("hidden");
+    $("#btn-viewer-trim").classList.add("hidden");
+    exitCropMode();
+    exitTrimMode();
 
     var mediaHost = $("#viewer-media");
     mediaHost.innerHTML = "";
@@ -3450,12 +3607,25 @@ function openViewer(id) {
     loadingLabel.className = "viewer-loading-label";
     loadingLabel.textContent = "Decrypting…";
     mediaHost.appendChild(loadingLabel);
+    var loadingBarTrack = document.createElement("div");
+    loadingBarTrack.className = "viewer-loading-bar-track";
+    var loadingBarFill = document.createElement("div");
+    loadingBarFill.className = "viewer-loading-bar-fill";
+    loadingBarTrack.appendChild(loadingBarFill);
+    mediaHost.appendChild(loadingBarTrack);
     var modalContentElInit = document.querySelector("#viewer-modal .modal-content");
-    if (modalContentElInit) modalContentElInit.classList.remove("video-mode");
+    // Applied immediately (not only once the video's actually ready) so
+    // the clean, big Quick-Look-style frame -- and the poster/progress bar
+    // above -- show right away instead of popping in after a delay.
+    if (modalContentElInit) modalContentElInit.classList.toggle("video-mode", record.kind === "video");
     showModal("#viewer-modal");
     updateViewerNavButtons();
 
-    return r2DownloadDecrypted(record.content_path, viewerState.fileKey, viewerState.metaJson.mime);
+    return r2DownloadDecrypted(record.content_path, viewerState.fileKey, viewerState.metaJson.mime, function (loadedBytes, totalBytes) {
+      if (viewerState.id !== id) return; // viewer moved on to something else
+      if (!totalBytes) return;
+      loadingBarFill.style.width = Math.min(100, (loadedBytes / totalBytes) * 100) + "%";
+    });
   }).then(function (blob) {
     var url = URL.createObjectURL(blob);
     viewerState.mediaUrl = url;
@@ -3485,13 +3655,17 @@ function openViewer(id) {
         }));
       });
       mediaHost.appendChild(video);
+      viewerState.videoEl = video;
+      $("#btn-viewer-trim").classList.toggle("hidden", typeof video.captureStream !== "function");
       return;
     }
 
     if (isRaw) {
       // Browsers can't decode RAW bytes directly -- show the embedded JPEG
       // preview instead of a broken image, with a note plus a download link
-      // for the untouched original.
+      // for the untouched original. Cropping the fallback preview wouldn't
+      // touch the actual RAW original, so cropping isn't offered here.
+      $("#btn-viewer-crop").classList.add("hidden");
       renderRawFallback(mediaHost, blob, url, ext);
       return;
     }
@@ -3501,10 +3675,13 @@ function openViewer(id) {
     imgEl.onerror = function () {
       // Some other format this browser can't render (e.g. HEIC outside
       // Safari) -- same embedded-preview fallback as RAW.
+      $("#btn-viewer-crop").classList.add("hidden");
       imgEl.remove();
       renderRawFallback(mediaHost, blob, url, ext);
     };
     mediaHost.appendChild(imgEl);
+    viewerState.imgEl = imgEl;
+    $("#btn-viewer-crop").classList.remove("hidden");
   }).catch(function (err) {
     $("#viewer-media").textContent = "Couldn't load this file: " + friendlyError(err);
   });
@@ -3572,9 +3749,274 @@ $("#btn-viewer-close").addEventListener("click", closeViewer);
 function closeViewer() {
   if (viewerState.mediaUrl) URL.revokeObjectURL(viewerState.mediaUrl);
   if (viewerState.previewUrl) URL.revokeObjectURL(viewerState.previewUrl);
+  exitCropMode();
+  exitTrimMode();
   hideModal("#viewer-modal");
   viewerState = { id: null, fileKey: null, metaJson: null, mediaUrl: null };
 }
+
+/* ---------------- Photo crop ----------------
+   A single draggable/resizable box overlaid on the displayed image, in
+   screen pixels -- converted to the image's *natural* pixel coordinates
+   only at the moment "Apply" is clicked, so dragging itself stays cheap
+   (no canvas redraws while moving the handles). */
+var cropState = null; // { dragging: 'move'|'nw'|'ne'|'sw'|'se'|null, startX, startY, box: {left,top,width,height} }
+
+function exitCropMode() {
+  cropState = null;
+  $("#crop-overlay").classList.add("hidden");
+  $("#crop-actions").classList.add("hidden");
+}
+
+$("#btn-viewer-crop").addEventListener("click", function () {
+  var img = viewerState.imgEl;
+  if (!img) return;
+  var rect = img.getBoundingClientRect();
+  var hostRect = $("#viewer-media").getBoundingClientRect();
+  // Start the crop box as the image's full displayed area, inset a
+  // little so all four handles are immediately visible and grabbable.
+  var inset = Math.min(rect.width, rect.height) * 0.08;
+  cropState = {
+    dragging: null,
+    imgLeft: rect.left - hostRect.left, imgTop: rect.top - hostRect.top,
+    imgWidth: rect.width, imgHeight: rect.height,
+    box: { left: inset, top: inset, width: rect.width - inset * 2, height: rect.height - inset * 2 },
+  };
+  positionCropBox();
+  $("#crop-overlay").classList.remove("hidden");
+  $("#crop-actions").classList.remove("hidden");
+});
+
+function positionCropBox() {
+  var b = cropState.box;
+  var el = $("#crop-box");
+  el.style.left = (cropState.imgLeft + b.left) + "px";
+  el.style.top = (cropState.imgTop + b.top) + "px";
+  el.style.width = b.width + "px";
+  el.style.height = b.height + "px";
+}
+
+$("#crop-box").addEventListener("pointerdown", function (e) {
+  if (!cropState) return;
+  var handle = e.target.dataset.handle;
+  cropState.dragging = handle || "move";
+  cropState.startX = e.clientX; cropState.startY = e.clientY;
+  cropState.startBox = Object.assign({}, cropState.box);
+  e.target.setPointerCapture(e.pointerId);
+  e.stopPropagation();
+});
+$("#crop-overlay").addEventListener("pointermove", function (e) {
+  if (!cropState || !cropState.dragging) return;
+  var dx = e.clientX - cropState.startX, dy = e.clientY - cropState.startY;
+  var b = Object.assign({}, cropState.startBox);
+  var maxW = cropState.imgWidth, maxH = cropState.imgHeight;
+  var MIN = 24;
+  if (cropState.dragging === "move") {
+    b.left = Math.max(0, Math.min(maxW - b.width, b.left + dx));
+    b.top = Math.max(0, Math.min(maxH - b.height, b.top + dy));
+  } else {
+    if (cropState.dragging.indexOf("w") !== -1) { // left edge moves
+      var newLeft = Math.max(0, Math.min(b.left + b.width - MIN, b.left + dx));
+      b.width += b.left - newLeft; b.left = newLeft;
+    }
+    if (cropState.dragging.indexOf("e") !== -1) { // right edge moves
+      b.width = Math.max(MIN, Math.min(maxW - b.left, b.width + dx));
+    }
+    if (cropState.dragging.indexOf("n") !== -1) {
+      var newTop = Math.max(0, Math.min(b.top + b.height - MIN, b.top + dy));
+      b.height += b.top - newTop; b.top = newTop;
+    }
+    if (cropState.dragging.indexOf("s") !== -1) {
+      b.height = Math.max(MIN, Math.min(maxH - b.top, b.height + dy));
+    }
+  }
+  cropState.box = b;
+  positionCropBox();
+});
+window.addEventListener("pointerup", function () { if (cropState) cropState.dragging = null; });
+
+$("#btn-crop-cancel").addEventListener("click", exitCropMode);
+$("#btn-crop-apply").addEventListener("click", function () {
+  if (!cropState || !viewerState.imgEl) return;
+  var img = viewerState.imgEl;
+  var scaleX = img.naturalWidth / cropState.imgWidth;
+  var scaleY = img.naturalHeight / cropState.imgHeight;
+  var b = cropState.box;
+  var sx = Math.round(b.left * scaleX), sy = Math.round(b.top * scaleY);
+  var sw = Math.round(b.width * scaleX), sh = Math.round(b.height * scaleY);
+
+  var applyBtn = $("#btn-crop-apply");
+  applyBtn.disabled = true; applyBtn.textContent = "Cropping…";
+
+  var canvas = document.createElement("canvas");
+  canvas.width = sw; canvas.height = sh;
+  canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  new Promise(function (resolve) { canvas.toBlob(resolve, viewerState.metaJson.mime || "image/jpeg", 0.9); })
+    .then(function (croppedBlob) {
+      return sb.from("objects").select("*").eq("id", viewerState.id).maybeSingle().then(function (res) {
+        var rec = res.data;
+        return createImageBitmap(croppedBlob).then(function (bitmap) {
+          return bitmapToJpegBlob(bitmap, 320).then(function (thumbBlob) {
+            return replaceObjectContent(rec, viewerState.fileKey, viewerState.metaJson, croppedBlob, thumbBlob, {
+              width: sw, height: sh, size: croppedBlob.size,
+            });
+          });
+        });
+      });
+    }).then(function (patchedMeta) {
+      viewerState.metaJson = patchedMeta;
+      exitCropMode();
+      applyBtn.disabled = false; applyBtn.textContent = "Apply crop";
+      refreshGallery();
+      openViewer(viewerState.id); // reload with the new cropped content
+    }).catch(function (err) {
+      applyBtn.disabled = false; applyBtn.textContent = "Apply crop";
+      alert("Couldn't apply crop: " + friendlyError(err));
+    });
+});
+
+/* ---------------- Video trim ----------------
+   No lossless "just cut the file" option exists in a browser -- an MP4's
+   internal structure isn't something you can slice mid-file without
+   demuxing/remuxing it properly. This instead plays the selected range
+   through HTMLMediaElement.captureStream() straight into a MediaRecorder,
+   which re-encodes it as it plays. Two honest tradeoffs that come with
+   that: the output is WebM (VP9/Opus), not whatever the original format
+   was, and processing takes roughly as long as the trimmed clip's own
+   length, since it's captured by actually playing through it. */
+var trimState = null; // { duration, start, end, dragging }
+
+function exitTrimMode() {
+  if (trimState && trimState.recorder && trimState.recorder.state !== "inactive") {
+    try { trimState.recorder.stop(); } catch (e) {}
+  }
+  trimState = null;
+  $("#trim-bar").classList.add("hidden");
+  var video = viewerState.videoEl;
+  if (video) video.controls = true;
+}
+
+$("#btn-viewer-trim").addEventListener("click", function () {
+  var video = viewerState.videoEl;
+  if (!video || !video.duration) return;
+  video.pause();
+  video.controls = false;
+  trimState = { duration: video.duration, start: 0, end: video.duration, dragging: null };
+  renderTrimBar();
+  $("#trim-bar").classList.remove("hidden");
+});
+
+function renderTrimBar() {
+  var n = trimState.duration || 1;
+  var startPct = (trimState.start / n) * 100, endPct = (trimState.end / n) * 100;
+  $("#trim-handle-start").style.left = startPct + "%";
+  $("#trim-handle-end").style.left = endPct + "%";
+  $("#trim-range-fill").style.left = startPct + "%";
+  $("#trim-range-fill").style.width = (endPct - startPct) + "%";
+  $("#trim-duration-label").textContent = formatDuration(trimState.start) + " – " + formatDuration(trimState.end)
+    + " (" + formatDuration(trimState.end - trimState.start) + ")";
+}
+function trimFractionAt(clientX) {
+  var rect = document.querySelector(".trim-bar-track").getBoundingClientRect();
+  return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+}
+$$(".trim-handle").forEach(function (handle) {
+  handle.addEventListener("pointerdown", function (e) {
+    if (!trimState) return;
+    trimState.dragging = handle.dataset.handle;
+    handle.setPointerCapture(e.pointerId);
+    e.stopPropagation();
+  });
+});
+document.querySelector(".trim-bar-track").addEventListener("pointermove", function (e) {
+  if (!trimState || !trimState.dragging) return;
+  var t = trimFractionAt(e.clientX) * trimState.duration;
+  if (trimState.dragging === "start") trimState.start = Math.min(t, trimState.end - 0.25);
+  else trimState.end = Math.max(t, trimState.start + 0.25);
+  trimState.start = Math.max(0, trimState.start);
+  trimState.end = Math.min(trimState.duration, trimState.end);
+  renderTrimBar();
+  if (viewerState.videoEl) viewerState.videoEl.currentTime = trimState.dragging === "start" ? trimState.start : trimState.end;
+});
+window.addEventListener("pointerup", function () { if (trimState) trimState.dragging = null; });
+
+$("#btn-trim-cancel").addEventListener("click", exitTrimMode);
+$("#btn-trim-apply").addEventListener("click", function () {
+  var video = viewerState.videoEl;
+  if (!video || !trimState) return;
+  var applyBtn = $("#btn-trim-apply");
+  applyBtn.disabled = true;
+  var start = trimState.start, end = trimState.end;
+
+  var stream = video.captureStream();
+  var mimeType = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+    .filter(function (t) { return window.MediaRecorder && MediaRecorder.isTypeSupported(t); })[0];
+  if (!mimeType) {
+    applyBtn.disabled = false;
+    alert("This browser can't re-encode video (no supported MediaRecorder format), so trimming isn't available here.");
+    return;
+  }
+  var recorder = new MediaRecorder(stream, { mimeType: mimeType });
+  var chunks = [];
+  recorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+  trimState.recorder = recorder;
+
+  video.currentTime = start;
+  video.muted = false;
+  var onSeeked = function () {
+    video.removeEventListener("seeked", onSeeked);
+    recorder.start();
+    video.play();
+    applyBtn.textContent = "Trimming… (plays through in real time)";
+    var checkEnd = setInterval(function () {
+      if (video.currentTime >= end || video.paused) {
+        clearInterval(checkEnd);
+        video.pause();
+        recorder.stop();
+      }
+    }, 100);
+  };
+  video.addEventListener("seeked", onSeeked);
+
+  recorder.onstop = function () {
+    var trimmedBlob = new Blob(chunks, { type: "video/webm" });
+    var newDuration = end - start;
+    sb.from("objects").select("*").eq("id", viewerState.id).maybeSingle().then(function (res) {
+      var rec = res.data;
+      // Grab a thumbnail frame from partway into the trimmed range rather
+      // than reusing the old thumbnail, which may no longer even be
+      // within the trimmed span.
+      return new Promise(function (resolve) {
+        var thumbVideo = document.createElement("video");
+        thumbVideo.muted = true;
+        thumbVideo.src = URL.createObjectURL(trimmedBlob);
+        thumbVideo.addEventListener("loadeddata", function () {
+          var canvas = document.createElement("canvas");
+          var scale = Math.min(1, 320 / Math.max(thumbVideo.videoWidth, thumbVideo.videoHeight));
+          canvas.width = Math.round(thumbVideo.videoWidth * scale) || 320;
+          canvas.height = Math.round(thumbVideo.videoHeight * scale) || 320;
+          canvas.getContext("2d").drawImage(thumbVideo, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(function (b) { URL.revokeObjectURL(thumbVideo.src); resolve(b); }, "image/jpeg", 0.8);
+        });
+        thumbVideo.currentTime = 0.1;
+      }).then(function (thumbBlob) {
+        return replaceObjectContent(rec, viewerState.fileKey, viewerState.metaJson, trimmedBlob, thumbBlob, {
+          duration: newDuration, size: trimmedBlob.size, mime: "video/webm", ext: "webm",
+        });
+      });
+    }).then(function (patchedMeta) {
+      viewerState.metaJson = patchedMeta;
+      exitTrimMode();
+      applyBtn.disabled = false; applyBtn.textContent = "Apply trim";
+      refreshGallery();
+      openViewer(viewerState.id); // reload with the trimmed content
+    }).catch(function (err) {
+      applyBtn.disabled = false; applyBtn.textContent = "Apply trim";
+      alert("Couldn't apply trim: " + friendlyError(err));
+    });
+  };
+});
 
 $("#btn-viewer-save").addEventListener("click", function () {
   if (!viewerState.id) return;
@@ -3610,6 +4052,12 @@ $("#btn-viewer-delete").addEventListener("click", function () {
     closeViewer();
     refreshGallery();
   });
+});
+// Same delete flow as above -- this is just the icon shown in the clean
+// video view, where the full metadata panel (and its Delete button) is
+// hidden.
+$("#btn-viewer-delete-video").addEventListener("click", function () {
+  $("#btn-viewer-delete").click();
 });
 
 /* ---------------- Reels (full-screen swipeable video feed) ----------------
