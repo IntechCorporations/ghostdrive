@@ -15,34 +15,13 @@
 <script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.min.js"></script>
 <style>
   :root {
-    --ink: #f5f3ee;
-    --ink-2: #ffffff;
-    --ink-3: #ece8df;
-    --line: #ddd7c8;
-    --text: #211f1a;
-    --text-dim: #6b6558;
-    --brass: #0071e3;
-    --brass-strong: #0058b0;
-    --brass-tint: #e8f2fd;
-    --danger: #a13f36;
-    --danger-tint: #f5e3e0;
-    --focus: #0071e3;
+    --ink: #15161a; --ink-2: #1c1e23; --ink-3: #23252b; --line: #34363d;
+    --text: #eae7de; --text-dim: #918c7d; --brass: #2997ff; --brass-strong: #6cb8ff;
+    --brass-tint: #0a2540; --danger: #d97469; --danger-tint: #3a2320; --focus: #2997ff;
     --radius: 10px;
     --serif: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
     --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --ink: #15161a; --ink-2: #1c1e23; --ink-3: #23252b; --line: #34363d;
-      --text: #eae7de; --text-dim: #918c7d; --brass: #2997ff; --brass-strong: #6cb8ff;
-      --brass-tint: #0a2540; --danger: #d97469; --danger-tint: #3a2320; --focus: #2997ff;
-    }
-  }
-  :root[data-theme="dark"] {
-    --ink: #15161a; --ink-2: #1c1e23; --ink-3: #23252b; --line: #34363d;
-    --text: #eae7de; --text-dim: #918c7d; --brass: #2997ff; --brass-strong: #6cb8ff;
-    --brass-tint: #0a2540; --danger: #d97469; --danger-tint: #3a2320; --focus: #2997ff;
   }
 
   * { box-sizing: border-box; }
@@ -365,6 +344,26 @@
   .viewer-video-trim:hover { background: var(--brass); color: #1c1406; }
   .viewer-video-trim svg { width: 17px; height: 17px; }
   .modal-content.video-mode .viewer-video-trim { display: flex; }
+  .viewer-video-details {
+    display: none; position: absolute; top: 12px; right: 140px; z-index: 3;
+    background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
+    border-radius: 50%; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .viewer-video-details:hover, .viewer-video-details.active { background: var(--brass); color: #1c1406; }
+  .viewer-video-details svg { width: 17px; height: 17px; }
+  .modal-content.video-mode .viewer-video-details { display: flex; }
+  /* The details panel stays fully hidden in video mode until the gear
+     button above is clicked -- "one big screen" by default, same as
+     macOS Preview, with the filename/date/folder fields just a click
+     away instead of gone entirely. */
+  .modal-content.video-mode .viewer-meta {
+    display: none; position: absolute; right: 14px; bottom: 14px; z-index: 5;
+    background: rgba(20,18,12,0.92); border-radius: 10px; padding: 16px; width: 260px;
+  }
+  .modal-content.video-mode.details-open .viewer-meta { display: flex; }
+  .modal-content.video-mode .viewer-meta input,
+  .modal-content.video-mode .viewer-meta label { color: #f5f1e6; }
+  .modal-content.video-mode .viewer-meta .hint { color: rgba(245,241,230,0.65); }
 
   /* ---------------- Photo crop ---------------- */
   .crop-overlay { position: absolute; inset: 0; z-index: 4; }
@@ -528,12 +527,6 @@
 </style>
 </head>
 <body>
-
-<div class="demo-banner" id="cloud-banner">
-  Ghostdrive stores everything encrypted in your own Supabase project — your files, filenames, and dates leave this browser only as ciphertext.
-</div>
-
-<button type="button" id="btn-theme-toggle" class="theme-toggle-btn" title="Switch to light mode" aria-label="Switch to light mode">&#9789;</button>
 
 <div id="app">
 
@@ -701,6 +694,9 @@
       </button>
       <button class="viewer-video-trim" id="btn-viewer-trim" title="Trim" aria-label="Trim">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"/></svg>
+      </button>
+      <button class="viewer-video-details" id="btn-viewer-details" title="Details" aria-label="Details">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
       <div id="trim-bar" class="trim-bar hidden">
         <div class="trim-bar-track">
@@ -1169,33 +1165,6 @@ function friendlyError(err) {
   var msg = (err && err.message) || String(err);
   return msg.length > 300 ? msg.slice(0, 300) + "…" : msg;
 }
-
-/* ---------------- Theme -- dark by default, with a manual toggle ----------------
-   Runs first, before anything else on the page, so there's as little flash
-   of the wrong theme as possible. */
-var THEME_KEY = "ghostdrive-theme";
-function loadTheme() {
-  try {
-    var t = localStorage.getItem(THEME_KEY);
-    return (t === "light" || t === "dark") ? t : "dark"; // dark unless you've said otherwise
-  } catch (e) { return "dark"; }
-}
-function applyTheme(theme) {
-  document.documentElement.setAttribute("data-theme", theme);
-  var btn = $("#btn-theme-toggle");
-  if (!btn) return;
-  var switchingToLight = theme === "dark";
-  btn.innerHTML = switchingToLight ? "&#9728;" : "&#9789;";
-  btn.title = switchingToLight ? "Switch to light mode" : "Switch to dark mode";
-  btn.setAttribute("aria-label", btn.title);
-}
-var currentTheme = loadTheme();
-applyTheme(currentTheme);
-$("#btn-theme-toggle").addEventListener("click", function () {
-  currentTheme = currentTheme === "dark" ? "light" : "dark";
-  try { localStorage.setItem(THEME_KEY, currentTheme); } catch (e) {}
-  applyTheme(currentTheme);
-});
 
 var state = {
   userId: null,
@@ -2021,14 +1990,15 @@ function expandZips(files) {
 // video -- which already carries a usable poster frame for its thumbnail,
 // so nothing about the visual is actually lost.
 function detectLivePhotoPairs(files) {
+  var LIVE_PHOTO_STILL_EXTENSIONS = ["heic", "heif", "jpg", "jpeg"];
   var baseName = function (name) { return name.replace(/\.[^.]+$/, "").toLowerCase(); };
   var movBaseNames = new Set(
-    files.filter(function (f) { return VIDEO_EXTENSIONS.indexOf(fileExt(f.name)) !== -1 && fileExt(f.name) === "mov"; })
+    files.filter(function (f) { return fileExt(f.name) === "mov"; })
       .map(function (f) { return baseName(f.name); })
   );
   return files.filter(function (f) {
-    var isStillImage = classifyFile(f) === "photo";
-    return !(isStillImage && movBaseNames.has(baseName(f.name)));
+    var isLivePhotoStill = classifyFile(f) === "photo" && LIVE_PHOTO_STILL_EXTENSIONS.indexOf(fileExt(f.name)) !== -1;
+    return !(isLivePhotoStill && movBaseNames.has(baseName(f.name)));
   });
 }
 
@@ -3585,6 +3555,8 @@ function openViewer(id) {
     $("#btn-viewer-trim").classList.add("hidden");
     exitCropMode();
     exitTrimMode();
+    document.querySelector("#viewer-modal .modal-content").classList.remove("details-open");
+    $("#btn-viewer-details").classList.remove("active");
 
     var mediaHost = $("#viewer-media");
     mediaHost.innerHTML = "";
@@ -4058,6 +4030,14 @@ $("#btn-viewer-delete").addEventListener("click", function () {
 // hidden.
 $("#btn-viewer-delete-video").addEventListener("click", function () {
   $("#btn-viewer-delete").click();
+});
+// The gear icon in the clean video view -- toggles the same
+// filename/date/folder panel photos always show, since video mode hides
+// it by default (see the video-mode .viewer-meta CSS rule).
+$("#btn-viewer-details").addEventListener("click", function () {
+  var modalContentEl = document.querySelector("#viewer-modal .modal-content");
+  var open = modalContentEl.classList.toggle("details-open");
+  $("#btn-viewer-details").classList.toggle("active", open);
 });
 
 /* ---------------- Reels (full-screen swipeable video feed) ----------------
