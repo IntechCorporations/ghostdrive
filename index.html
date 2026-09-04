@@ -201,6 +201,10 @@
   .upload-row.done .upload-row-pct { color: var(--brass-strong); }
   .upload-row.error .upload-row-fill { background: var(--danger); }
   .upload-row.error .upload-row-pct { color: var(--danger); }
+  .upload-row.cancelled .upload-row-fill { background: var(--text-dim); }
+  .upload-row.cancelled .upload-row-pct { color: var(--text-dim); }
+  .upload-row-cancel { flex: none; width: 18px; height: 18px; line-height: 16px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--text-dim); font-size: 13px; cursor: pointer; }
+  .upload-row-cancel:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
 
   #page-drop-overlay {
     position: fixed; inset: 0; z-index: 500; display: none;
@@ -217,12 +221,16 @@
 
   .date-group-header { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--text); padding: 22px 28px 12px; margin: 0; }
   .date-group .gallery { padding-top: 0; padding-bottom: 8px; }
-  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--tile-size, 168px), 1fr)); gap: 16px; padding: 6px 28px 48px; }
+  .gallery { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 28px 48px; }
   .thumb {
-    position: relative; aspect-ratio: 1; border-radius: 9px; overflow: hidden;
+    position: relative; border-radius: 6px; overflow: hidden;
     background: var(--ink-3); border: 1px solid var(--line); cursor: pointer;
+    /* JS (layoutJustifiedGallery) sets explicit width/height per tile once
+       aspect ratios are known -- this is just a placeholder box so nothing
+       collapses to zero height before that first pass runs. */
+    width: var(--tile-size, 168px); height: var(--tile-size, 168px);
   }
-  .thumb img, .thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb img, .thumb video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
   .thumb .kind-badge {
     position: absolute; top: 7px; right: 7px; background: rgba(20,18,12,0.65); color: #f1ead8;
     font-size: 10.5px; font-family: var(--mono); padding: 2px 7px; border-radius: 5px; letter-spacing: 0.03em;
@@ -250,10 +258,10 @@
 
   .gallery.list-view { display: flex; flex-direction: column; gap: 3px; padding: 6px 28px 48px; }
   .list-view .thumb {
-    aspect-ratio: unset; display: flex; align-items: center; gap: 14px;
+    width: auto; height: auto; aspect-ratio: unset; display: flex; align-items: center; gap: 14px;
     border-radius: 8px; padding: 8px 12px;
   }
-  .list-view .thumb img, .list-view .thumb video { width: 52px; height: 52px; flex: none; border-radius: 6px; }
+  .list-view .thumb img, .list-view .thumb video { width: 52px; height: 52px; flex: none; border-radius: 6px; object-fit: cover; }
   .list-view .thumb.placeholder { width: 52px; height: 52px; flex: none; font-size: 22px; border-radius: 6px; }
   .list-view .thumb .kind-badge {
     position: static; background: var(--ink-3); color: var(--text-dim); flex: none;
@@ -769,8 +777,8 @@ function r2Fetch(path, opts) {
 function r2Get(path) {
   return r2Fetch("/object?path=" + encodeURIComponent(path)).then(function (r) { return r.arrayBuffer(); });
 }
-function r2PutSmall(path, bytes) {
-  return r2Fetch("/object?path=" + encodeURIComponent(path), { method: "PUT", body: bytes });
+function r2PutSmall(path, bytes, signal) {
+  return r2Fetch("/object?path=" + encodeURIComponent(path), { method: "PUT", body: bytes, signal: signal });
 }
 function r2Delete(path) {
   return r2Fetch("/object?path=" + encodeURIComponent(path), { method: "DELETE" });
@@ -779,18 +787,18 @@ function r2Delete(path) {
 // slice into its own frame as it goes -- memory stays flat regardless of
 // whether the file is 20MB or 20GB. Gives real byte-level progress via
 // onProgress(loaded, total).
-function r2UploadFileEncrypted(path, file, fileKey, onProgress) {
+function r2UploadFileEncrypted(path, file, fileKey, onProgress, signal) {
   var total = file.size;
   if (onProgress) onProgress(0, total);
   if (total <= CHUNK_PLAIN_SIZE) {
     return file.arrayBuffer().then(function (buf) {
-      return r2PutSmall(path, encryptChunkFrame(fileKey, new Uint8Array(buf)));
+      return r2PutSmall(path, encryptChunkFrame(fileKey, new Uint8Array(buf)), signal);
     }).then(function () { if (onProgress) onProgress(total, total); });
   }
   var uploadId, parts = [];
   return r2Fetch("/mpu/create", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: path }),
+    body: JSON.stringify({ path: path }), signal: signal,
   }).then(function (r) { return r.json(); }).then(function (res) {
     uploadId = res.uploadId;
     var offset = 0, partNumber = 0;
@@ -802,8 +810,9 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress) {
       attempt = attempt || 1;
       return r2Fetch(
         "/mpu/part?path=" + encodeURIComponent(path) + "&uploadId=" + encodeURIComponent(uploadId) + "&partNumber=" + partNumber,
-        { method: "PUT", body: frame }
+        { method: "PUT", body: frame, signal: signal }
       ).then(function (r) { return r.json(); }).catch(function (err) {
+        if (signal && signal.aborted) throw err; // a deliberate cancel -- don't keep retrying it
         if (attempt >= 5) throw err;
         return new Promise(function (resolve) { setTimeout(resolve, Math.min(1000 * Math.pow(2, attempt), 15000)); })
           .then(function () { return uploadPartWithRetry(frame, attempt + 1); });
@@ -842,6 +851,7 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress) {
 // Downloads and decrypts a framed object back into a Blob, with optional
 // byte-level progress while the (single, whole-object) GET streams down.
 function r2DownloadDecrypted(path, fileKey, mime, onProgress) {
+  var r2RawBuf = null; // kept around so a framing-parse failure can still try it unframed, see below
   return r2Fetch("/object?path=" + encodeURIComponent(path)).then(function (r) {
     if (!onProgress || !r.body || !r.body.getReader) return r.arrayBuffer();
     var total = Number(r.headers.get("Content-Length")) || 0;
@@ -864,17 +874,30 @@ function r2DownloadDecrypted(path, fileKey, mime, onProgress) {
     }
     return pump();
   }).then(function (buf) {
+    r2RawBuf = buf;
     var parts = decryptFramedBuffer(fileKey, new Uint8Array(buf));
+    if (!parts.length) throw new Error("empty or unrecognized frame data");
     return new Blob(parts, { type: mime || "application/octet-stream" });
-  }).catch(function (err) {
-    // Anything uploaded before the switch to R2 only ever existed in the
-    // old Supabase Storage bucket -- R2 starts out empty for it, so the
-    // fetch above 404s. Fall back to the old bucket (old, unframed
-    // single-secretbox format) rather than surfacing an error for every
-    // pre-migration photo and video, and quietly re-upload it to R2 in the
-    // new framed format so this fallback is only needed once per item.
+  }).catch(function (framedErr) {
+    // Tier 2: the object IS in R2 (so this isn't a migration gap), but its
+    // bytes don't parse as the current chunk-framed format. This is what a
+    // handful of items can be stuck in from a brief window today where an
+    // in-progress version of the R2 migration wrote the old unframed
+    // (single-secretbox) format straight to R2 before framing was added --
+    // try decrypting the same bytes that way before assuming it's missing.
+    if (r2RawBuf) {
+      try {
+        var plain = decryptBytes(fileKey, new Uint8Array(r2RawBuf));
+        r2PutSmall(path, encryptChunkFrame(fileKey, plain)).catch(function () {}); // self-heal to the current format
+        return new Blob([plain], { type: mime || "application/octet-stream" });
+      } catch (unframedErr) { /* fall through to tier 3 below */ }
+    }
+    // Tier 3: anything uploaded before the switch to R2 only ever existed
+    // in the old Supabase Storage bucket -- R2 never had it at all, so
+    // tier 1 above 404s outright (r2RawBuf stays null). Fall back to the
+    // old bucket (also the old unframed format) and self-heal into R2.
     return sb.storage.from(BUCKET).download(path).then(function (res) {
-      if (res.error) throw err; // genuinely missing in both places -- surface the original R2 error
+      if (res.error) throw framedErr; // genuinely missing everywhere -- surface the original R2 error
       return res.data.arrayBuffer();
     }).then(function (legacyBuf) {
       var plain = decryptBytes(fileKey, new Uint8Array(legacyBuf));
@@ -1478,9 +1501,10 @@ function addUploadTrayRow(file) {
   var row = document.createElement("div");
   row.className = "upload-row";
   row.innerHTML =
-    '<div class="upload-row-head"><div class="upload-row-name"></div><div class="upload-row-pct">Waiting…</div></div>' +
+    '<div class="upload-row-head"><div class="upload-row-name"></div><div class="upload-row-pct"></div><button type="button" class="upload-row-cancel" title="Cancel upload">&times;</button></div>' +
     '<div class="upload-row-bar"><div class="upload-row-fill"></div></div>';
   row.querySelector(".upload-row-name").textContent = file.name;
+  row.querySelector(".upload-row-pct").textContent = "Waiting…";
   uploadTray.appendChild(row);
   return row;
 }
@@ -1489,8 +1513,13 @@ function updateUploadTrayRow(row, loaded, total) {
   row.querySelector(".upload-row-fill").style.width = pct + "%";
   row.querySelector(".upload-row-pct").textContent = pct + "%";
 }
-function completeUploadTrayRow(row, errorMsg) {
-  if (errorMsg) {
+function completeUploadTrayRow(row, errorMsg, cancelled) {
+  var cancelBtn = row.querySelector(".upload-row-cancel");
+  if (cancelBtn) cancelBtn.remove(); // nothing left to cancel once it's settled
+  if (cancelled) {
+    row.classList.add("cancelled");
+    row.querySelector(".upload-row-pct").textContent = "Cancelled";
+  } else if (errorMsg) {
     row.classList.add("error");
     row.querySelector(".upload-row-pct").textContent = "Failed";
     row.title = errorMsg;
@@ -1502,7 +1531,7 @@ function completeUploadTrayRow(row, errorMsg) {
   setTimeout(function () {
     row.remove();
     if (!uploadTray.children.length) uploadTray.classList.remove("active");
-  }, errorMsg ? 6000 : 1500);
+  }, errorMsg && !cancelled ? 6000 : 1500);
 }
 
 /* ---------------- Cross-tab upload visibility ----------------
@@ -1513,20 +1542,40 @@ function completeUploadTrayRow(row, errorMsg) {
    the actual work performs the network calls; the others just relay and
    display the same three events. */
 var uploadRowsById = new Map(); // id -> tray row element, in THIS tab
+// AbortControllers for uploads THIS tab is actually driving -- only ever
+// populated in the one tab doing the real network work (see below), so a
+// cancel click in a tab that's merely mirroring the tray is a no-op here
+// and instead goes out over the broadcast channel to whichever tab holds
+// the real controller.
+var uploadAbortControllers = new Map();
+function cancelUpload(id) {
+  var controller = uploadAbortControllers.get(id);
+  if (controller) controller.abort(); // this tab is the one driving it
+  broadcastUpload({ type: "cancel-request", id: id }); // in case another tab is
+}
+uploadTray.addEventListener("click", function (e) {
+  var btn = e.target.closest(".upload-row-cancel");
+  if (!btn) return;
+  var row = btn.closest(".upload-row");
+  var id = row && row.dataset.uploadId;
+  if (id) cancelUpload(id);
+});
 var uploadChannel = (typeof BroadcastChannel !== "undefined") ? new BroadcastChannel("ghostdrive-uploads") : null;
 function broadcastUpload(msg) { if (uploadChannel) { try { uploadChannel.postMessage(msg); } catch (e) {} } }
 function trayRowStart(id, name) {
   if (uploadRowsById.has(id)) return;
-  uploadRowsById.set(id, addUploadTrayRow({ name: name }));
+  var row = addUploadTrayRow({ name: name });
+  row.dataset.uploadId = id;
+  uploadRowsById.set(id, row);
 }
 function trayRowProgress(id, loaded, total) {
   var row = uploadRowsById.get(id);
   if (row) updateUploadTrayRow(row, loaded, total);
 }
-function trayRowFinish(id, errorMsg) {
+function trayRowFinish(id, errorMsg, cancelled) {
   var row = uploadRowsById.get(id);
   if (!row) return;
-  completeUploadTrayRow(row, errorMsg);
+  completeUploadTrayRow(row, errorMsg, cancelled);
   uploadRowsById.delete(id);
 }
 if (uploadChannel) {
@@ -1535,14 +1584,20 @@ if (uploadChannel) {
     if (!msg || !msg.id) return;
     if (msg.type === "start") trayRowStart(msg.id, msg.name);
     else if (msg.type === "progress") trayRowProgress(msg.id, msg.loaded, msg.total);
-    else if (msg.type === "done") trayRowFinish(msg.id, msg.error || null);
+    else if (msg.type === "done") trayRowFinish(msg.id, msg.error || null, msg.cancelled || false);
+    else if (msg.type === "cancel-request") {
+      // Only meaningful in whichever tab actually holds this id's
+      // controller -- every other tab's map lookup just misses.
+      var controller = uploadAbortControllers.get(msg.id);
+      if (controller) controller.abort();
+    }
   };
 }
 // The tab actually driving an upload calls this -- it updates its own
 // tray immediately AND tells every other open tab to show the same row.
 function reportUploadStart(id, name) { trayRowStart(id, name); broadcastUpload({ type: "start", id: id, name: name }); }
 function reportUploadProgress(id, loaded, total) { trayRowProgress(id, loaded, total); broadcastUpload({ type: "progress", id: id, loaded: loaded, total: total }); }
-function reportUploadDone(id, errorMsg) { trayRowFinish(id, errorMsg); broadcastUpload({ type: "done", id: id, error: errorMsg || null }); }
+function reportUploadDone(id, errorMsg, cancelled) { trayRowFinish(id, errorMsg, cancelled); broadcastUpload({ type: "done", id: id, error: errorMsg || null, cancelled: cancelled || false }); }
 
 /* A zip is never uploaded as one opaque blob -- it's unpacked client-side
    (via fflate) into its individual files first, and each of those goes
@@ -1594,6 +1649,8 @@ function processExpandedFiles(files) {
     var file = files[i];
     var id = newUploadId();
     reportUploadStart(id, file.name);
+    var controller = new AbortController();
+    uploadAbortControllers.set(id, controller);
     // Queued in its raw form FIRST, before a single byte is read off the
     // file or encrypted -- see the "Durable upload queue" section below for
     // why that step, not the encrypt-then-queue that used to happen here,
@@ -1601,7 +1658,7 @@ function processExpandedFiles(files) {
     var rawEntry = { id: id, stage: "raw", file: file, fileName: file.name, fileSize: file.size, folder: currentFolder, queuedAt: Date.now() };
     queuePut(rawEntry).catch(function () {}) // best-effort -- an IndexedDB-less browser still gets the upload, just not the durability
       .then(function () {
-        return runQueuedUpload(rawEntry, function (loaded, total) { reportUploadProgress(id, loaded, total); });
+        return runQueuedUpload(rawEntry, function (loaded, total) { reportUploadProgress(id, loaded, total); }, controller.signal);
       })
       .then(function () {
         reportUploadDone(id, null);
@@ -1609,11 +1666,18 @@ function processExpandedFiles(files) {
         refreshGallery();
       })
       .catch(function (err) {
-        console.error("upload failed", err);
-        reportUploadDone(id, friendlyError(err));
-        logUploadResult(file.name, file.size, false, friendlyError(err));
+        var cancelled = err && (err.name === "AbortError" || err.cancelled);
+        if (cancelled) {
+          reportUploadDone(id, null, true);
+          queueDelete(id).catch(function () {}); // nothing to resume -- this one was deliberate
+        } else {
+          console.error("upload failed", err);
+          reportUploadDone(id, friendlyError(err));
+          logUploadResult(file.name, file.size, false, friendlyError(err));
+        }
       })
       .then(function () {
+        uploadAbortControllers.delete(id);
         uploadsInFlight--;
         maybeFinishPendingSignOut();
         i++;
@@ -1930,18 +1994,17 @@ function makeThumbnail(file, kind) {
   var MAX = 320;
   if (kind === "photo") {
     return createImageBitmap(file).then(function (bitmap) {
-      return bitmapToJpegBlob(bitmap, MAX);
-    }).then(function (blob) { return { blob: blob, duration: null }; })
+      return bitmapToJpegBlob(bitmap, MAX).then(function (blob) { return { blob: blob, duration: null, width: bitmap.width, height: bitmap.height }; });
+    })
       .catch(function () {
         // Most likely a RAW file (or another format this browser can't
         // decode) -- fall back to its embedded EXIF preview instead of
         // leaving it with no thumbnail at all.
         return extractEmbeddedPreview(file).then(function (previewBlob) {
-          if (!previewBlob) return { blob: null, duration: null };
+          if (!previewBlob) return { blob: null, duration: null, width: null, height: null };
           return createImageBitmap(previewBlob)
-            .then(function (bitmap) { return bitmapToJpegBlob(bitmap, MAX); })
-            .then(function (blob) { return { blob: blob, duration: null }; })
-            .catch(function () { return { blob: null, duration: null }; });
+            .then(function (bitmap) { return bitmapToJpegBlob(bitmap, MAX).then(function (blob) { return { blob: blob, duration: null, width: bitmap.width, height: bitmap.height }; }); })
+            .catch(function () { return { blob: null, duration: null, width: null, height: null }; });
         });
       });
   }
@@ -1960,7 +2023,7 @@ function makeThumbnail(file, kind) {
       // timeout that leaves this promise pending forever, which is exactly
       // what silently hangs the whole upload -- so give up on a thumbnail
       // rather than block the upload on one.
-      var giveUpTimer = setTimeout(function () { finish(resolve, { blob: null, duration: null }); }, 8000);
+      var giveUpTimer = setTimeout(function () { finish(resolve, { blob: null, duration: null, width: null, height: null }); }, 8000);
       video.addEventListener("loadeddata", function () {
         try {
           var duration = isFinite(video.duration) ? video.duration : null;
@@ -1970,14 +2033,14 @@ function makeThumbnail(file, kind) {
           canvas.height = Math.round(video.videoHeight * scale) || MAX;
           var ctx = canvas.getContext("2d");
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob(function (b) { finish(resolve, { blob: b, duration: duration }); }, "image/jpeg", 0.8);
+          canvas.toBlob(function (b) { finish(resolve, { blob: b, duration: duration, width: video.videoWidth, height: video.videoHeight }); }, "image/jpeg", 0.8);
         } catch (e) { finish(reject, e); }
       });
       video.addEventListener("error", function () { finish(reject, new Error("video decode failed")); });
       video.currentTime = 0.1;
     });
   }
-  return Promise.resolve({ blob: null, duration: null });
+  return Promise.resolve({ blob: null, duration: null, width: null, height: null });
 }
 
 /* ---------------- Durable upload queue (survives closing the tab) ----------------
@@ -2109,6 +2172,7 @@ function prepareUpload(file, id, folder) {
           var metadata = {
             name: file.name, mime: file.type || "application/octet-stream", date: defaultDate,
             folder: folder, size: file.size, ext: fileExt(file.name), duration: thumbInfo.duration,
+            width: thumbInfo.width || null, height: thumbInfo.height || null,
           };
           var encryptedMetadata = toB64(encryptBytes(fileKey, new TextEncoder().encode(JSON.stringify(metadata))));
           var wrappedFileKey = toB64(encryptBytes(state.masterKey, fileKey));
@@ -2136,9 +2200,9 @@ function prepareUpload(file, id, folder) {
 // "prepared"/"prepared-large" entry (or an older queued entry from before
 // the "raw" stage existed, which has no .stage at all but does have a
 // .dbPayload) skips straight to the upload.
-function runQueuedUpload(entry, onProgress) {
+function runQueuedUpload(entry, onProgress, signal) {
   if (entry.stage === "prepared" || entry.stage === "prepared-large" || (!entry.stage && entry.dbPayload)) {
-    return uploadQueueEntry(entry, onProgress);
+    return uploadQueueEntry(entry, onProgress, signal);
   }
   return prepareUpload(entry.file, entry.id, entry.folder).then(function (prepared) {
     // A large entry's `file` and `fileKey` only need to survive in this
@@ -2146,10 +2210,10 @@ function runQueuedUpload(entry, onProgress) {
     // put in IndexedDB (a File object can't be serialized there anyway,
     // and re-storing a multi-GB key-and-blob pair would defeat the whole
     // point of streaming it instead of buffering it).
-    if (prepared.stage === "prepared-large") return uploadQueueEntry(prepared, onProgress);
+    if (prepared.stage === "prepared-large") return uploadQueueEntry(prepared, onProgress, signal);
     return queuePut(prepared).then(function () {
       registerBackgroundSync();
-      return uploadQueueEntry(prepared, onProgress);
+      return uploadQueueEntry(prepared, onProgress, signal);
     });
   });
 }
@@ -2159,16 +2223,16 @@ function runQueuedUpload(entry, onProgress) {
 // from a closed tab -- either way it's the same entry shape, so the same
 // function drives both paths (except a "prepared-large" entry, which
 // can only ever be the just-picked path -- see prepareUpload above).
-function uploadQueueEntry(entry, onProgress) {
+function uploadQueueEntry(entry, onProgress, signal) {
   var contentUpload = entry.stage === "prepared-large"
-    ? r2UploadFileEncrypted(entry.contentPath, entry.file, entry.fileKey, onProgress)
-    : entry.contentBlob.arrayBuffer().then(function (buf) { return r2PutSmall(entry.contentPath, new Uint8Array(buf)); })
+    ? r2UploadFileEncrypted(entry.contentPath, entry.file, entry.fileKey, onProgress, signal)
+    : entry.contentBlob.arrayBuffer().then(function (buf) { return r2PutSmall(entry.contentPath, new Uint8Array(buf), signal); })
         .then(function () { if (onProgress) onProgress(entry.contentBlob.size, entry.contentBlob.size); });
 
   return contentUpload
     .then(function () {
       return (entry.thumbPath && entry.thumbBlob)
-        ? entry.thumbBlob.arrayBuffer().then(function (buf) { return r2PutSmall(entry.thumbPath, new Uint8Array(buf)); })
+        ? entry.thumbBlob.arrayBuffer().then(function (buf) { return r2PutSmall(entry.thumbPath, new Uint8Array(buf), signal); })
         : null;
     })
     .then(function () {
@@ -2179,6 +2243,7 @@ function uploadQueueEntry(entry, onProgress) {
       return entry.stage === "prepared-large" ? null : queueDelete(entry.id);
     })
     .catch(function (err) {
+      if (signal && signal.aborted) throw err; // a deliberate cancel -- nothing to retry, just surface it
       if (entry.stage === "prepared-large") throw err; // nothing durable to re-queue -- just surface the failure
       entry.lastError = friendlyError(err);
       entry.attempts = (entry.attempts || 0) + 1;
@@ -2226,16 +2291,25 @@ function resumePendingUploads() {
       // since the winning tab is the one reporting on it.
       withUploadLock(entry.id, function () {
         reportUploadStart(entry.id, entry.fileName);
-        return runQueuedUpload(entry, function (loaded, total) { reportUploadProgress(entry.id, loaded, total); })
+        var controller = new AbortController();
+        uploadAbortControllers.set(entry.id, controller);
+        return runQueuedUpload(entry, function (loaded, total) { reportUploadProgress(entry.id, loaded, total); }, controller.signal)
           .then(function () {
             reportUploadDone(entry.id, null);
             logUploadResult(entry.fileName, entry.fileSize, true, null);
             refreshGallery();
           })
           .catch(function (err) {
-            reportUploadDone(entry.id, friendlyError(err));
-            logUploadResult(entry.fileName, entry.fileSize, false, friendlyError(err));
-          });
+            var cancelled = err && (err.name === "AbortError" || err.cancelled);
+            if (cancelled) {
+              reportUploadDone(entry.id, null, true);
+              queueDelete(entry.id).catch(function () {});
+            } else {
+              reportUploadDone(entry.id, friendlyError(err));
+              logUploadResult(entry.fileName, entry.fileSize, false, friendlyError(err));
+            }
+          })
+          .then(function () { uploadAbortControllers.delete(entry.id); });
       })
         .then(function () {
           uploadsInFlight--;
@@ -2360,12 +2434,19 @@ $("#view-mode-select").addEventListener("change", function (e) {
   currentViewMode = e.target.value;
   try { localStorage.setItem(VIEW_MODE_KEY, currentViewMode); } catch (e) {}
   applyViewMode();
+  relayoutAllGalleries();
 });
 function applyViewMode() {
   var isList = currentViewMode === "list" || currentViewMode === "list-compact";
   $$(".gallery").forEach(function (g) {
     g.classList.toggle("list-view", isList);
     g.classList.toggle("list-compact", currentViewMode === "list-compact");
+    if (isList) {
+      // Undo any explicit pixel sizing the justified grid layout left
+      // behind -- list mode has its own fixed 52px row sizing in CSS,
+      // which an inline style would otherwise override.
+      Array.prototype.forEach.call(g.children, function (tile) { tile.style.width = ""; tile.style.height = ""; });
+    }
   });
 }
 
@@ -2388,7 +2469,7 @@ function setTileSize(px) {
   try { localStorage.setItem(TILE_SIZE_KEY, String(px)); } catch (e) {}
 }
 setTileSize(loadTileSize());
-$("#tile-size-slider").addEventListener("input", function (e) { setTileSize(parseInt(e.target.value, 10)); });
+$("#tile-size-slider").addEventListener("input", function (e) { setTileSize(parseInt(e.target.value, 10)); relayoutAllGalleries(); });
 
 function isViewerOpen() {
   var el = $("#viewer-modal");
@@ -2555,7 +2636,179 @@ function refreshGallery() {
     });
 
     applyViewMode();
+    relayoutAllGalleries();
     renderSelectionUI();
+  });
+}
+
+/* ---------------- Justified gallery layout (Google/Apple Photos style) ----------------
+   The default CSS-grid square-crop layout was replaced with this: rows are
+   packed to the container's exact width using each tile's true aspect
+   ratio, so nothing gets cropped -- a row's shared height is stretched or
+   compressed just enough that all its tiles' widths sum to the container
+   width (photos.google.com and Apple Photos both use this same idea). The
+   trailing, not-yet-full row is left at the target height rather than
+   stretched, which is what keeps a single photo at the end of a day from
+   ballooning to fill the whole row width. */
+function layoutJustifiedGallery(grid) {
+  if (!grid || grid.classList.contains("list-view")) return; // list mode has its own fixed-size row layout
+  var containerWidth = grid.clientWidth;
+  if (!containerWidth) return; // hidden (e.g. a collapsed section) -- nothing to lay out yet
+  var targetHeight = currentTileSize();
+  var gap = 4;
+  var tiles = Array.prototype.slice.call(grid.children);
+  var row = [];
+  var rowWidth = 0;
+
+  function commitRow(isLast) {
+    if (!row.length) return;
+    var gapsWidth = gap * (row.length - 1);
+    // An under-filled final row reads as a photo grid, not a design bug --
+    // stretching it to full width would make one leftover photo huge.
+    var stretch = (isLast && rowWidth < containerWidth * 0.9) ? 1 : (containerWidth - gapsWidth) / (rowWidth - gapsWidth);
+    row.forEach(function (r) {
+      r.tile.style.width = Math.round(r.naturalWidth * stretch) + "px";
+      r.tile.style.height = Math.round(targetHeight * stretch) + "px";
+    });
+    row = [];
+    rowWidth = 0;
+  }
+
+  tiles.forEach(function (tile, idx) {
+    var aspect = parseFloat(tile.dataset.aspect) || 1;
+    var naturalWidth = aspect * targetHeight;
+    row.push({ tile: tile, naturalWidth: naturalWidth });
+    rowWidth += naturalWidth + (row.length > 1 ? gap : 0);
+    if (rowWidth >= containerWidth) commitRow(false);
+    else if (idx === tiles.length - 1) commitRow(true);
+  });
+}
+
+// Aspect ratios refine as thumbnails load (see renderTile) -- debounced so
+// a burst of images loading at once doesn't reflow the grid once per image.
+var relayoutTimers = new WeakMap();
+function scheduleRelayout(grid) {
+  if (!grid) return;
+  clearTimeout(relayoutTimers.get(grid));
+  relayoutTimers.set(grid, setTimeout(function () { layoutJustifiedGallery(grid); }, 150));
+}
+function relayoutAllGalleries() { $$(".gallery").forEach(layoutJustifiedGallery); }
+window.addEventListener("resize", function () {
+  clearTimeout(relayoutTimers.get(window));
+  relayoutTimers.set(window, setTimeout(relayoutAllGalleries, 150));
+});
+
+/* ---------------- Gallery hover-to-play video preview ----------------
+   Hovering a video tile in the grid swaps its thumbnail for the actual
+   (muted, looping) video, same as Google Photos/Apple Photos. Getting
+   that to feel instant is the point of the "optimistic preloading" here:
+   an IntersectionObserver watches which video tiles are currently
+   scrolled into view and starts decrypting them in the background --
+   capped to a couple at once -- so by the time a hover actually happens,
+   playback more often than not just starts rather than waiting on a
+   decrypt. A tile that's hovered before its prefetch got to it just
+   starts the fetch immediately instead.
+   One deliberate limit: only files under GALLERY_PREVIEW_MAX_PREFETCH_BYTES
+   get *optimistically* prefetched merely for scrolling past them --
+   pre-decrypting a multi-GB video just because it scrolled through the
+   viewport would burn real bandwidth for something that may never be
+   hovered. A hover always fetches regardless of size; it just won't
+   already be sitting there ready for a huge file the way a normal-sized
+   one will. */
+var GALLERY_PREVIEW_MAX_PREFETCH_BYTES = 150 * 1024 * 1024;
+var GALLERY_PREVIEW_MAX_CONCURRENT = 2;
+var galleryPreviewCache = new Map(); // id -> { status: 'pending'|'ready'|'error', promise, url }
+var galleryPreviewCacheOrder = []; // eviction order, oldest first
+var GALLERY_PREVIEW_CACHE_MAX = 8;
+
+function galleryPreviewEvictIfNeeded() {
+  while (galleryPreviewCacheOrder.length > GALLERY_PREVIEW_CACHE_MAX) {
+    var evictId = galleryPreviewCacheOrder.shift();
+    var entry = galleryPreviewCache.get(evictId);
+    if (entry && entry.url) URL.revokeObjectURL(entry.url);
+    galleryPreviewCache.delete(evictId);
+  }
+}
+
+function startGalleryPreviewLoad(record) {
+  var existing = galleryPreviewCache.get(record.id);
+  if (existing) return existing.promise;
+  var loaded = loadObjectMeta(record); // also warms state.fileKeyCache
+  var promise = r2DownloadDecrypted(record.content_path, loaded.fileKey, loaded.metaJson.mime || "video/mp4").then(function (blob) {
+    var url = URL.createObjectURL(blob);
+    galleryPreviewCache.set(record.id, { status: "ready", promise: promise, url: url });
+    galleryPreviewCacheOrder.push(record.id);
+    galleryPreviewEvictIfNeeded();
+    return url;
+  }).catch(function (err) {
+    galleryPreviewCache.delete(record.id);
+    throw err;
+  });
+  galleryPreviewCache.set(record.id, { status: "pending", promise: promise, url: null });
+  return promise;
+}
+
+// A tiny concurrency-limited queue for the background (non-hover) prefetch
+// pass -- hover-triggered loads bypass this and always start immediately.
+var galleryPrefetchQueue = [];
+var galleryPrefetchActive = 0;
+function galleryPrefetchPump() {
+  while (galleryPrefetchActive < GALLERY_PREVIEW_MAX_CONCURRENT && galleryPrefetchQueue.length) {
+    var record = galleryPrefetchQueue.shift();
+    if (galleryPreviewCache.has(record.id)) continue;
+    galleryPrefetchActive++;
+    startGalleryPreviewLoad(record).catch(function () {}).then(function () {
+      galleryPrefetchActive--;
+      galleryPrefetchPump();
+    });
+  }
+}
+function queueGalleryPrefetch(record, metaJson) {
+  if (galleryPreviewCache.has(record.id)) return;
+  if ((metaJson.size || 0) > GALLERY_PREVIEW_MAX_PREFETCH_BYTES) return; // hover-only for big files, see note above
+  galleryPrefetchQueue.push(record);
+  galleryPrefetchPump();
+}
+
+var galleryPreviewObserver = (typeof IntersectionObserver !== "undefined") ? new IntersectionObserver(function (entries) {
+  entries.forEach(function (e) {
+    if (e.isIntersecting && e.target._ghostdriveQueuePrefetch) e.target._ghostdriveQueuePrefetch();
+  });
+}, { rootMargin: "200px" }) : null;
+
+function wireVideoHoverPreview(tile, img, record, metaJson) {
+  var video = null;
+  var hoverToken = 0;
+
+  if (galleryPreviewObserver) {
+    tile._ghostdriveQueuePrefetch = function () { queueGalleryPrefetch(record, metaJson); };
+    galleryPreviewObserver.observe(tile);
+  }
+
+  tile.addEventListener("mouseenter", function () {
+    var myToken = ++hoverToken;
+    startGalleryPreviewLoad(record).then(function (url) {
+      if (myToken !== hoverToken) return; // mouse already left before this resolved
+      if (!video) {
+        video = document.createElement("video");
+        video.muted = true;
+        video.loop = true;
+        video.playsInline = true;
+        tile.appendChild(video);
+      }
+      video.src = url;
+      video.style.display = "block";
+      img.style.display = "none";
+      video.play().catch(function () {});
+    }).catch(function () {}); // couldn't preview it -- thumbnail just stays put, no error worth surfacing here
+  });
+  tile.addEventListener("mouseleave", function () {
+    hoverToken++; // invalidates a load that resolves after the mouse has already left
+    if (video) {
+      video.pause();
+      video.style.display = "none";
+    }
+    img.style.display = "block";
   });
 }
 
@@ -2563,12 +2816,26 @@ function renderTile(record, metaJson) {
   var tile = document.createElement("div");
   tile.className = "thumb";
   tile.dataset.id = record.id;
+  // The justified layout below needs each tile's aspect ratio to size it
+  // without cropping. Anything uploaded after today has this stored
+  // straight from the original file; older items don't, so they start at
+  // a neutral 1:1 guess and get corrected (and relaid-out) the moment
+  // their thumbnail image actually loads and reports its real dimensions.
+  tile.dataset.aspect = (metaJson.width && metaJson.height) ? (metaJson.width / metaJson.height) : 1;
   if (selectedIds.has(record.id)) tile.classList.add("selected");
 
   if (record.thumbnail_path) {
     var img = document.createElement("img");
+    if (!(metaJson.width && metaJson.height)) {
+      img.addEventListener("load", function () {
+        if (!img.naturalWidth || !img.naturalHeight) return;
+        tile.dataset.aspect = img.naturalWidth / img.naturalHeight;
+        scheduleRelayout(tile.parentElement);
+      });
+    }
     loadThumbnail(record).then(function (url) { if (url) img.src = url; });
     tile.appendChild(img);
+    if (record.kind === "video") wireVideoHoverPreview(tile, img, record, metaJson);
   } else {
     tile.classList.add("placeholder");
     if (record.kind === "video") tile.textContent = "🎬";
@@ -2714,7 +2981,10 @@ function loadThumbnail(record) {
     var url = URL.createObjectURL(blob);
     thumbUrlCache.set(record.id, url);
     return url;
-  }).catch(function () { return null; });
+  }).catch(function (err) {
+    console.error("thumbnail load failed for " + record.id + ":", err);
+    return null;
+  });
 }
 
 /* ---------------- Viewer (with prev/next, like a normal photo app) ---------------- */
