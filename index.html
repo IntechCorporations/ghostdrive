@@ -977,6 +977,96 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress, signal) {
     throw err;
   });
 }
+
+/* ---------------- Unencrypted large-file transfer ----------------
+   By explicit choice (confirmed with the user, since it's a real, standing
+   trade-off): files over CHUNK_PLAIN_SIZE skip encryption entirely. Their
+   bytes sit in R2 exactly as uploaded -- readable by anything with access
+   to the bucket, not just this app with the right key. Metadata (name,
+   date, folder) still stays encrypted regardless; this only affects the
+   file's actual content. Small files and thumbnails are unaffected and
+   stay fully encrypted as before. Which path an object went through is
+   recorded in its (encrypted) metadata as contentEncrypted: false, so the
+   right one gets picked automatically on download without guessing. */
+function r2UploadFileRaw(path, file, onProgress, signal) {
+  var total = file.size;
+  if (onProgress) onProgress(0, total);
+  var ranges = [];
+  for (var offset = 0; offset < total; offset += CHUNK_PLAIN_SIZE) {
+    ranges.push({ start: offset, end: Math.min(offset + CHUNK_PLAIN_SIZE, total) });
+  }
+  var uploadId;
+  var parts = new Array(ranges.length);
+  var loaded = 0;
+  return r2Fetch("/mpu/create", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: path }), signal: signal,
+  }).then(function (r) { return r.json(); }).then(function (res) {
+    uploadId = res.uploadId;
+    function uploadPartWithRetry(partNumber, buf, attempt) {
+      attempt = attempt || 1;
+      return r2Fetch(
+        "/mpu/part?path=" + encodeURIComponent(path) + "&uploadId=" + encodeURIComponent(uploadId) + "&partNumber=" + partNumber,
+        { method: "PUT", body: buf, signal: signal }
+      ).then(function (r) { return r.json(); }).catch(function (err) {
+        if (signal && signal.aborted) throw err;
+        if (attempt >= 5) throw err;
+        return new Promise(function (resolve) { setTimeout(resolve, Math.min(1000 * Math.pow(2, attempt), 15000)); })
+          .then(function () { return uploadPartWithRetry(partNumber, buf, attempt + 1); });
+      });
+    }
+    var next = 0;
+    function worker() {
+      if (next >= ranges.length) return Promise.resolve();
+      var i = next++;
+      var range = ranges[i];
+      return file.slice(range.start, range.end).arrayBuffer().then(function (buf) {
+        return uploadPartWithRetry(i + 1, buf);
+      }).then(function (res2) {
+        parts[i] = { partNumber: i + 1, etag: res2.etag };
+        loaded += range.end - range.start;
+        if (onProgress) onProgress(loaded, total);
+        return worker();
+      });
+    }
+    var workers = [];
+    for (var w = 0; w < Math.min(PARALLEL_TRANSFER_CONCURRENCY, ranges.length); w++) workers.push(worker());
+    return Promise.all(workers);
+  }).then(function () {
+    return r2Fetch("/mpu/complete", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path, uploadId: uploadId, parts: parts }),
+    });
+  }).catch(function (err) {
+    if (uploadId) {
+      r2Fetch("/mpu/abort", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path, uploadId: uploadId }),
+      }).catch(function () {});
+    }
+    throw err;
+  });
+}
+function r2DownloadRaw(path, mime, onProgress) {
+  return r2Fetch("/object?path=" + encodeURIComponent(path)).then(function (r) {
+    if (!onProgress || !r.body || !r.body.getReader) return r.blob();
+    var total = Number(r.headers.get("Content-Length")) || 0;
+    var loaded = 0;
+    var reader = r.body.getReader();
+    var chunks = [];
+    function pump() {
+      return reader.read().then(function (res) {
+        if (res.done) return new Blob(chunks, { type: mime || "application/octet-stream" });
+        chunks.push(res.value);
+        loaded += res.value.length;
+        onProgress(loaded, total);
+        return pump();
+      });
+    }
+    return pump();
+  });
+}
+
 // Downloads and decrypts a framed object back into a Blob, with optional
 // byte-level progress while the (single, whole-object) GET streams down.
 // Frame sizes are fixed for anything actually chunked on upload (every
@@ -1172,6 +1262,18 @@ function hideModal(id) { $(id).classList.add("hidden"); }
 function friendlyError(err) {
   var msg = (err && err.message) || String(err);
   return msg.length > 300 ? msg.slice(0, 300) + "…" : msg;
+}
+
+// Picks the right download path for a given object based on how it was
+// actually uploaded (see prepareUpload/contentEncrypted) -- older items
+// (or anything under the large-file threshold) have no contentEncrypted
+// field at all, which defaults to true here so nothing existing changes
+// behavior.
+function downloadObjectContent(record, fileKey, metaJson, onProgress) {
+  if (metaJson.contentEncrypted === false) {
+    return r2DownloadRaw(record.content_path, metaJson.mime, onProgress);
+  }
+  return r2DownloadDecrypted(record.content_path, fileKey, metaJson.mime, onProgress);
 }
 
 var state = {
@@ -2548,6 +2650,12 @@ function prepareUpload(file, id, folder) {
             name: file.name, mime: file.type || "application/octet-stream", date: defaultDate,
             folder: folder, size: file.size, ext: fileExt(file.name), duration: thumbInfo.duration,
             width: thumbInfo.width || null, height: thumbInfo.height || null,
+            // Large files skip content encryption entirely (an explicit,
+            // confirmed choice -- see r2UploadFileRaw). Recorded here (even
+            // though this whole metadata blob is itself still encrypted) so
+            // download time knows which of the two transfer paths to use
+            // without having to guess or probe.
+            contentEncrypted: !isLarge,
           };
           var encryptedMetadata = toB64(encryptBytes(fileKey, new TextEncoder().encode(JSON.stringify(metadata))));
           var wrappedFileKey = toB64(encryptBytes(state.masterKey, fileKey));
@@ -2560,6 +2668,7 @@ function prepareUpload(file, id, folder) {
             id: id, stage: isLarge ? "prepared-large" : "prepared", contentPath: contentPath,
             contentBlob: contentBlob, // set for small files, null for large (see isLarge above)
             file: isLarge ? file : null, fileKey: isLarge ? fileKey : null, // only large uploads need these at upload time
+            plaintextContent: isLarge, // tells uploadQueueEntry to skip encryption for the content upload
             thumbPath: thumbPath, thumbBlob: thumbBlob,
             dbPayload: dbPayload,
             fileName: file.name, fileSize: file.size, queuedAt: Date.now(),
@@ -2629,7 +2738,9 @@ function runQueuedUpload(entry, onProgress, signal) {
 // can only ever be the just-picked path -- see prepareUpload above).
 function uploadQueueEntry(entry, onProgress, signal) {
   var contentUpload = entry.stage === "prepared-large"
-    ? r2UploadFileEncrypted(entry.contentPath, entry.file, entry.fileKey, onProgress, signal)
+    ? (entry.plaintextContent
+        ? r2UploadFileRaw(entry.contentPath, entry.file, onProgress, signal)
+        : r2UploadFileEncrypted(entry.contentPath, entry.file, entry.fileKey, onProgress, signal))
     : entry.contentBlob.arrayBuffer().then(function (buf) { return r2PutSmall(entry.contentPath, new Uint8Array(buf), signal); })
         .then(function () { if (onProgress) onProgress(entry.contentBlob.size, entry.contentBlob.size); });
 
@@ -3242,7 +3353,7 @@ function startGalleryPreviewLoad(record) {
   var existing = galleryPreviewCache.get(record.id);
   if (existing) return existing.promise;
   var loaded = loadObjectMeta(record); // also warms state.fileKeyCache
-  var promise = r2DownloadDecrypted(record.content_path, loaded.fileKey, loaded.metaJson.mime || "video/mp4").then(function (blob) {
+  var promise = downloadObjectContent(record, loaded.fileKey, loaded.metaJson).then(function (blob) {
     var url = URL.createObjectURL(blob);
     galleryPreviewCache.set(record.id, { status: "ready", promise: promise, url: url, blob: blob });
     galleryPreviewCacheOrder.push(record.id);
@@ -3751,7 +3862,7 @@ function openViewer(id) {
           }
           mediaHost.appendChild(loadingLabel);
           mediaHost.appendChild(loadingBarTrack);
-          return r2DownloadDecrypted(record.content_path, viewerState.fileKey, viewerState.metaJson.mime, function (loadedBytes, totalBytes) {
+          return downloadObjectContent(record, viewerState.fileKey, viewerState.metaJson, function (loadedBytes, totalBytes) {
             if (viewerState.id !== id) return;
             if (!totalBytes) return;
             loadingBarFill.style.width = Math.min(100, (loadedBytes / totalBytes) * 100) + "%";
@@ -3759,7 +3870,7 @@ function openViewer(id) {
         });
     }
 
-    return r2DownloadDecrypted(record.content_path, viewerState.fileKey, viewerState.metaJson.mime, function (loadedBytes, totalBytes) {
+    return downloadObjectContent(record, viewerState.fileKey, viewerState.metaJson, function (loadedBytes, totalBytes) {
       if (viewerState.id !== id) return; // viewer moved on to something else
       if (!totalBytes) return;
       loadingBarFill.style.width = Math.min(100, (loadedBytes / totalBytes) * 100) + "%";
@@ -4269,7 +4380,7 @@ function loadReelVideo(id, onProgress) {
   var record = reelsState.records.get(id);
   if (!record) return Promise.reject(new Error("Video not found."));
   var loaded = loadObjectMeta(record); // also warms state.fileKeyCache
-  return r2DownloadDecrypted(record.content_path, loaded.fileKey, loaded.metaJson.mime || "video/mp4", onProgress).then(function (blob) {
+  return downloadObjectContent(record, loaded.fileKey, loaded.metaJson, onProgress).then(function (blob) {
     var url = URL.createObjectURL(blob);
     reelsCacheSet(id, { url: url });
     return blob.arrayBuffer().then(function (buf) {
