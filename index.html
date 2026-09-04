@@ -3730,7 +3730,14 @@ function openViewer(id) {
     showModal("#viewer-modal");
     updateViewerNavButtons();
 
-    if (record.kind === "video" && window.MediaSource) {
+    // Disabled for now: MediaSource-based progressive playback needs the
+    // video to actually be a *fragmented* MP4 (moof/mdat pairs) to reliably
+    // accept appended chunks -- most phone/camera video isn't recorded that
+    // way, and this couldn't be verified against a real large file live.
+    // The function below is left in place, just not called, so it can be
+    // turned back on (`true &&`) once that's actually confirmed to work
+    // rather than risk leaving playback stuck mid-file on an unverified path.
+    if (false && record.kind === "video" && window.MediaSource) {
       return playVideoProgressiveMSE(mediaHost, record, viewerState.fileKey, viewerState.metaJson, loadingBarFill, loadingLabel, id)
         .then(function () { return "progressive"; })
         .catch(function (err) {
