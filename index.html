@@ -988,7 +988,7 @@ function showModal(id) { $(id).classList.remove("hidden"); }
 function hideModal(id) { $(id).classList.add("hidden"); }
 function friendlyError(err) {
   var msg = (err && err.message) || String(err);
-  return msg.length > 140 ? "Something went wrong. Please try again." : msg;
+  return msg.length > 300 ? msg.slice(0, 300) + "…" : msg;
 }
 
 /* ---------------- Theme -- dark by default, with a manual toggle ----------------
