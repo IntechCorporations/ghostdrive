@@ -3549,6 +3549,135 @@ function loadThumbnail(record) {
 /* ---------------- Viewer (with prev/next, like a normal photo app) ---------------- */
 var viewerState = { id: null, fileKey: null, metaJson: null, mediaUrl: null };
 
+/* ---------------- Progressive video playback (start before the whole file
+   is ready, seek ahead into not-yet-downloaded regions) ----------------
+   Each uploaded chunk is its own independent encryption unit (its own
+   nonce, decryptable on its own -- see encryptChunkFrame), which is what
+   makes this possible at all: any chunk can be fetched and decrypted
+   without needing the ones before it. That's fed into the video element
+   via MediaSource Extensions, appending chunks in order as they're
+   fetched, so playback can start as soon as the first one or two chunks
+   are in rather than waiting for the whole file.
+   Real limits worth being upfront about: this needs the browser to accept
+   the file's bare mime type for MediaSource (checked below, and it just
+   falls back to the old full-download approach if not); and a seek ahead
+   of what's downloaded so far is an approximation -- it jumps the fetch
+   cursor to roughly the right chunk based on the file's overall size, not
+   a frame-exact byte position (that would need actually parsing the
+   video's internal index, which is a much bigger undertaking). It works
+   well in practice for typical consumer video, and always falls back
+   safely rather than getting stuck if something about a particular file
+   doesn't cooperate. */
+function playVideoProgressiveMSE(mediaHost, record, fileKey, metaJson, loadingBarFill, loadingLabel, viewerId) {
+  var mime = metaJson.mime || "video/mp4";
+  if (!MediaSource.isTypeSupported(mime)) return Promise.reject(new Error("MediaSource doesn't support " + mime));
+
+  return r2Fetch("/object?path=" + encodeURIComponent(record.content_path), { method: "HEAD" }).then(function (headRes) {
+    var total = Number(headRes.headers.get("Content-Length")) || 0;
+    var frameOnDiskSize = CHUNK_PLAIN_SIZE + FRAME_OVERHEAD;
+    if (!total || total <= frameOnDiskSize * 1.5) throw new Error("too small to matter -- not worth the MSE machinery");
+    var ranges = [];
+    for (var offset = 0; offset < total; offset += frameOnDiskSize) {
+      ranges.push({ start: offset, end: Math.min(offset + frameOnDiskSize, total) - 1 });
+    }
+
+    return new Promise(function (resolve, reject) {
+      var video = document.createElement("video");
+      video.controls = true;
+      video.addEventListener("error", function () {
+        var mediaErr = video.error;
+        var reason = mediaErr ? "code " + mediaErr.code + (mediaErr.message ? ": " + mediaErr.message : "") : "unknown reason";
+        video.replaceWith(Object.assign(document.createElement("div"), {
+          className: "raw-note",
+          textContent: "This video downloaded and decrypted fine, but this browser can't play it back (" + reason + "). It may use a codec this browser doesn't support.",
+        }));
+      });
+      mediaHost.appendChild(video);
+
+      var mediaSource = new MediaSource();
+      var mediaSourceUrl = URL.createObjectURL(mediaSource);
+      video.src = mediaSourceUrl;
+      viewerState.mediaUrl = mediaSourceUrl; // covered by closeViewer's existing URL.revokeObjectURL cleanup
+
+      var sourceBuffer = null;
+      var nextIndex = 0;       // next chunk index the fetch loop will pull
+      var appendedCount = 0;
+      var started = false;
+      var abandoned = function () { return viewerState.id !== viewerId; };
+
+      function loaded(n) { return Math.min(total, n * frameOnDiskSize); }
+
+      function pump() {
+        if (abandoned()) return;
+        if (sourceBuffer.updating) { sourceBuffer.addEventListener("updateend", pump, { once: true }); return; }
+        if (nextIndex >= ranges.length) {
+          if (mediaSource.readyState === "open") { try { mediaSource.endOfStream(); } catch (e) {} }
+          return;
+        }
+        var i = nextIndex++;
+        var range = ranges[i];
+        r2Fetch("/object?path=" + encodeURIComponent(record.content_path), { headers: { Range: "bytes=" + range.start + "-" + range.end } })
+          .then(function (r) { return r.arrayBuffer(); })
+          .then(function (buf) {
+            if (abandoned()) return;
+            var bytes = new Uint8Array(buf);
+            var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            var len = view.getUint32(0, true);
+            if (4 + len !== bytes.length) throw new Error("frame boundary assumption didn't hold");
+            var plain = decryptBytes(fileKey, bytes.subarray(4, 4 + len));
+            sourceBuffer.appendBuffer(plain);
+            appendedCount++;
+            loadingBarFill.style.width = Math.min(100, (loaded(appendedCount) / total) * 100) + "%";
+            if (!started && appendedCount >= 1) {
+              started = true;
+              loadingLabel.remove();
+              video.play().catch(function () {});
+              resolve(); // playback is underway -- the rest streams in in the background
+            }
+          })
+          .catch(function (err) {
+            if (abandoned()) return;
+            if (!started) reject(err); // failed before ever starting -- let the caller fall back
+          });
+      }
+
+      mediaSource.addEventListener("sourceopen", function () {
+        if (abandoned()) return;
+        try {
+          sourceBuffer = mediaSource.addSourceBuffer(mime);
+        } catch (err) { reject(err); return; }
+        sourceBuffer.addEventListener("updateend", pump);
+        pump();
+      }, { once: true });
+
+      // A click on the native scrubber past what's buffered so far --
+      // instead of waiting for the linear fetch to eventually get there,
+      // jump the fetch cursor to roughly that point in the file (see the
+      // function-level note above on why this is an approximation) and
+      // resume appending from there.
+      video.addEventListener("seeking", function () {
+        if (!sourceBuffer || abandoned()) return;
+        var buffered = video.buffered;
+        var covered = false;
+        for (var b = 0; b < buffered.length; b++) {
+          if (video.currentTime >= buffered.start(b) && video.currentTime <= buffered.end(b)) { covered = true; break; }
+        }
+        if (covered) return; // already have this part -- native seeking handles it
+        var duration = video.duration || metaJson.duration || 1;
+        var targetIndex = Math.max(0, Math.min(ranges.length - 1, Math.floor((video.currentTime / duration) * ranges.length)));
+        loadingLabel.textContent = "Loading from here…";
+        if (!loadingLabel.isConnected) mediaHost.appendChild(loadingLabel);
+        nextIndex = targetIndex;
+        if (sourceBuffer && !sourceBuffer.updating) pump();
+      });
+      video.addEventListener("playing", function () { if (loadingLabel.isConnected) loadingLabel.remove(); });
+
+      viewerState.videoEl = video;
+      $("#btn-viewer-trim").classList.toggle("hidden", typeof video.captureStream !== "function");
+    });
+  });
+}
+
 function openViewer(id) {
   var record;
   sb.from("objects").select("*").eq("id", id).maybeSingle().then(function (res) {
@@ -3601,12 +3730,36 @@ function openViewer(id) {
     showModal("#viewer-modal");
     updateViewerNavButtons();
 
+    if (record.kind === "video" && window.MediaSource) {
+      return playVideoProgressiveMSE(mediaHost, record, viewerState.fileKey, viewerState.metaJson, loadingBarFill, loadingLabel, id)
+        .then(function () { return "progressive"; })
+        .catch(function (err) {
+          console.warn("progressive video playback unavailable, falling back to full download:", err);
+          mediaHost.innerHTML = "";
+          if (record.kind === "video" || record.kind === "photo") {
+            var poster2 = document.createElement("img");
+            poster2.className = "viewer-poster";
+            mediaHost.appendChild(poster2);
+            loadThumbnail(record).then(function (u) { if (u && viewerState.id === id) poster2.src = u; });
+          }
+          mediaHost.appendChild(loadingLabel);
+          mediaHost.appendChild(loadingBarTrack);
+          return r2DownloadDecrypted(record.content_path, viewerState.fileKey, viewerState.metaJson.mime, function (loadedBytes, totalBytes) {
+            if (viewerState.id !== id) return;
+            if (!totalBytes) return;
+            loadingBarFill.style.width = Math.min(100, (loadedBytes / totalBytes) * 100) + "%";
+          });
+        });
+    }
+
     return r2DownloadDecrypted(record.content_path, viewerState.fileKey, viewerState.metaJson.mime, function (loadedBytes, totalBytes) {
       if (viewerState.id !== id) return; // viewer moved on to something else
       if (!totalBytes) return;
       loadingBarFill.style.width = Math.min(100, (loadedBytes / totalBytes) * 100) + "%";
     });
-  }).then(function (blob) {
+  }).then(function (blobOrMarker) {
+    if (blobOrMarker === "progressive") return; // playVideoProgressiveMSE already set everything up
+    var blob = blobOrMarker;
     var url = URL.createObjectURL(blob);
     viewerState.mediaUrl = url;
 
