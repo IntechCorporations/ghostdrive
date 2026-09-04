@@ -877,33 +877,60 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress, signal) {
 // Downloads and decrypts a framed object back into a Blob, with optional
 // byte-level progress while the (single, whole-object) GET streams down.
 function r2DownloadDecrypted(path, fileKey, mime, onProgress) {
-  var r2RawBuf = null; // kept around so a framing-parse failure can still try it unframed, see below
   return r2Fetch("/object?path=" + encodeURIComponent(path)).then(function (r) {
-    if (!onProgress || !r.body || !r.body.getReader) return r.arrayBuffer();
+    if (!r.body || !r.body.getReader) {
+      // No streaming body available in this environment -- only option
+      // left is buffering the whole response. Fine for something
+      // thumbnail-sized; a genuinely huge file taking this path is the
+      // one case this function still can't fully protect against.
+      return r.arrayBuffer().then(function (buf) {
+        var parts = decryptFramedBuffer(fileKey, new Uint8Array(buf));
+        if (!parts.length) throw new Error("empty or unrecognized frame data");
+        return new Blob(parts, { type: mime || "application/octet-stream" });
+      });
+    }
     var total = Number(r.headers.get("Content-Length")) || 0;
-    var reader = r.body.getReader();
-    var chunks = [];
     var loaded = 0;
+    var reader = r.body.getReader();
+    var parts = [];
+    // Holds only the not-yet-decrypted tail -- at most one frame's worth
+    // (~8MB) plus whatever just arrived over the network, never the whole
+    // file. This is the actual fix: a 2+GB video used to get buffered into
+    // one single contiguous allocation before any of it was decrypted,
+    // which is exactly the kind of allocation a browser can refuse or
+    // choke on. Decrypting each frame the moment it's fully arrived keeps
+    // memory bounded regardless of the file's total size.
+    var pending = new Uint8Array(0);
+    function appendPending(chunk) {
+      var merged = new Uint8Array(pending.length + chunk.length);
+      merged.set(pending, 0);
+      merged.set(chunk, pending.length);
+      pending = merged;
+    }
+    function drainCompleteFrames() {
+      while (pending.length >= 4) {
+        var view = new DataView(pending.buffer, pending.byteOffset, pending.byteLength);
+        var len = view.getUint32(0, true);
+        if (pending.length < 4 + len) break; // this frame hasn't fully arrived yet
+        parts.push(decryptBytes(fileKey, pending.subarray(4, 4 + len)));
+        pending = pending.subarray(4 + len); // a view into the same buffer, not a copy
+      }
+    }
     function pump() {
       return reader.read().then(function (res) {
         if (res.done) {
-          var buf = new Uint8Array(loaded);
-          var off = 0;
-          chunks.forEach(function (c) { buf.set(c, off); off += c.length; });
-          return buf.buffer;
+          drainCompleteFrames();
+          if (!parts.length) throw new Error("empty or unrecognized frame data");
+          return new Blob(parts, { type: mime || "application/octet-stream" });
         }
-        chunks.push(res.value);
         loaded += res.value.length;
-        onProgress(loaded, total);
+        if (onProgress) onProgress(loaded, total);
+        appendPending(res.value);
+        drainCompleteFrames();
         return pump();
       });
     }
     return pump();
-  }).then(function (buf) {
-    r2RawBuf = buf;
-    var parts = decryptFramedBuffer(fileKey, new Uint8Array(buf));
-    if (!parts.length) throw new Error("empty or unrecognized frame data");
-    return new Blob(parts, { type: mime || "application/octet-stream" });
   }).catch(function (framedErr) {
     // Tier 2: the object IS in R2 (so this isn't a migration gap), but its
     // bytes don't parse as the current chunk-framed format. This is what a
@@ -911,24 +938,42 @@ function r2DownloadDecrypted(path, fileKey, mime, onProgress) {
     // in-progress version of the R2 migration wrote the old unframed
     // (single-secretbox) format straight to R2 before framing was added --
     // try decrypting the same bytes that way before assuming it's missing.
-    if (r2RawBuf) {
+    // This re-fetches the object (rather than reusing a buffer kept around
+    // from tier 1, which no longer exists now that tier 1 streams instead
+    // of buffering) -- an extra request only in this narrow, one-time
+    // legacy-format case is a fair trade for tier 1 never holding a whole
+    // multi-GB file in memory on the normal path.
+    return r2Get(path).then(function (buf) {
       try {
-        var plain = decryptBytes(fileKey, new Uint8Array(r2RawBuf));
+        var plain = decryptBytes(fileKey, new Uint8Array(buf));
         r2PutSmall(path, encryptChunkFrame(fileKey, plain)).catch(function () {}); // self-heal to the current format
         return new Blob([plain], { type: mime || "application/octet-stream" });
-      } catch (unframedErr) { /* fall through to tier 3 below */ }
-    }
-    // Tier 3: anything uploaded before the switch to R2 only ever existed
-    // in the old Supabase Storage bucket -- R2 never had it at all, so
-    // tier 1 above 404s outright (r2RawBuf stays null). Fall back to the
-    // old bucket (also the old unframed format) and self-heal into R2.
-    return sb.storage.from(BUCKET).download(path).then(function (res) {
-      if (res.error) throw framedErr; // genuinely missing everywhere -- surface the original R2 error
-      return res.data.arrayBuffer();
-    }).then(function (legacyBuf) {
-      var plain = decryptBytes(fileKey, new Uint8Array(legacyBuf));
-      r2PutSmall(path, encryptChunkFrame(fileKey, plain)).catch(function () {}); // best-effort migration, don't block on it
-      return new Blob([plain], { type: mime || "application/octet-stream" });
+      } catch (unframedErr) {
+        // Tier 3: anything uploaded before the switch to R2 only ever
+        // existed in the old Supabase Storage bucket -- R2 never had it at
+        // all, so tier 1 above 404s outright before even reaching here.
+        // Fall back to the old bucket (also the old unframed format) and
+        // self-heal into R2.
+        return sb.storage.from(BUCKET).download(path).then(function (res) {
+          if (res.error) throw framedErr; // genuinely missing everywhere -- surface the original R2 error
+          return res.data.arrayBuffer();
+        }).then(function (legacyBuf) {
+          var legacyPlain = decryptBytes(fileKey, new Uint8Array(legacyBuf));
+          r2PutSmall(path, encryptChunkFrame(fileKey, legacyPlain)).catch(function () {});
+          return new Blob([legacyPlain], { type: mime || "application/octet-stream" });
+        });
+      }
+    }).catch(function () {
+      // r2Get itself failed (most likely a 404 -- never existed in R2 at
+      // all) -- go straight to tier 3 without a wasted decrypt attempt.
+      return sb.storage.from(BUCKET).download(path).then(function (res) {
+        if (res.error) throw framedErr;
+        return res.data.arrayBuffer();
+      }).then(function (legacyBuf) {
+        var legacyPlain = decryptBytes(fileKey, new Uint8Array(legacyBuf));
+        r2PutSmall(path, encryptChunkFrame(fileKey, legacyPlain)).catch(function () {});
+        return new Blob([legacyPlain], { type: mime || "application/octet-stream" });
+      });
     });
   });
 }
@@ -1220,9 +1265,9 @@ $("#form-login").addEventListener("submit", function (e) {
   var password = $("#login-password").value;
 
   sb.auth.signInWithPassword({ email: email, password: password }).then(function (res) {
-    if (res.error) { errEl.textContent = "Incorrect email or password."; return; }
+    if (res.error) { errEl.textContent = friendlyError(res.error); return; }
     return ensureVaultAndUnlock(password).then(enterVault);
-  }).catch(function () { errEl.textContent = "Incorrect email or password."; });
+  }).catch(function (err) { errEl.textContent = friendlyError(err); });
 });
 
 /* ---------------- Google sign-in ---------------- */
