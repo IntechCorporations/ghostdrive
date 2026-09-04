@@ -1141,7 +1141,23 @@ function downloadBytesXHR(url, token, timeoutMs) {
   });
 }
 
-function downloadPickedItemAsFile(token, item) {
+// baseUrls expire ~60 minutes after the picker session was created, and
+// video downloads in particular can fail transiently (dropped connection,
+// Google still finalizing the transcode) well within that window. Re-listing
+// the session gives every item a fresh baseUrl, so a failed download can
+// retry with a URL that's actually still valid -- this only works as long
+// as the session itself hasn't been deleted yet, which is why the caller
+// now keeps the session open until every item has finished downloading.
+function refreshPickedItem(token, sessionId, mediaItemId) {
+  return listPickedMediaItems(token, sessionId).then(function (items) {
+    var fresh = items.filter(function (it) { return it.id === mediaItemId; })[0];
+    if (!fresh) throw new Error("item no longer available in this Google Photos session");
+    return fresh;
+  });
+}
+
+function downloadPickedItemAsFile(token, sessionId, item, attempt) {
+  attempt = attempt || 1;
   var isVideo = item.type === "VIDEO";
   if (isVideo && mediaItemVideoStatus(item) === "FAILED") {
     return Promise.reject(new Error((item.mediaFile.filename || "This video") + " failed to process in Google Photos."));
@@ -1152,13 +1168,25 @@ function downloadPickedItemAsFile(token, item) {
   var url = item.mediaFile.baseUrl + (isVideo ? "=dv" : "=d");
   var name = item.mediaFile.filename || (isVideo ? "video.mp4" : "photo.jpg");
   var timeoutMs = isVideo ? 5 * 60 * 1000 : 60 * 1000;
+  var maxAttempts = isVideo ? 3 : 2; // videos are the flaky case, so they get more retries
 
   return downloadBytesXHR(url, token, timeoutMs).then(function (blob) {
     var mime = item.mediaFile.mimeType || blob.type || (isVideo ? "video/mp4" : "image/jpeg");
     var createdMs = item.createTime ? new Date(item.createTime).getTime() : Date.now();
     return new File([blob], name, { type: mime, lastModified: createdMs });
   }).catch(function (err) {
-    throw new Error("Couldn't download " + name + " from Google Photos (" + friendlyError(err) + ").");
+    if (attempt >= maxAttempts) {
+      throw new Error("Couldn't download " + name + " from Google Photos (" + friendlyError(err) + ") after " + attempt + " attempts.");
+    }
+    // Refresh the baseUrl before retrying -- reusing the same (possibly
+    // stale or momentarily broken) URL would likely just fail the same way.
+    return refreshPickedItem(token, sessionId, item.id).then(function (freshItem) {
+      return downloadPickedItemAsFile(token, sessionId, freshItem, attempt + 1);
+    }).catch(function () {
+      // If even the refresh fails (e.g. session hiccup), fall back to one
+      // more try with the original item rather than giving up immediately.
+      return downloadPickedItemAsFile(token, sessionId, item, attempt + 1);
+    });
   });
 }
 
@@ -1177,21 +1205,31 @@ $("#btn-import-google-photos").addEventListener("click", function () {
     return pollPickerSession(token, session.id, 2000, deadline).then(function (finishedSession) {
       return listPickedMediaItems(token, finishedSession.id).then(function (items) {
         var videoDeadline = Date.now() + 3 * 60 * 1000; // up to 3 minutes for Google to finish processing videos
+        // The session is intentionally left open here (not deleted) --
+        // downloads haven't started yet, and a retry after a failed
+        // download needs to re-list this same session to get a fresh
+        // baseUrl. It's deleted once every item is done, below.
         return waitForVideosReady(token, finishedSession.id, items, videoDeadline, statusEl).then(function (readyItems) {
-          // Only delete the session once we're done polling it — deleting
-          // earlier would break any further status re-checks above.
-          photosPickerFetch(token, "/sessions/" + finishedSession.id, { method: "DELETE" }).catch(function () {});
-          return readyItems;
+          return { sessionId: finishedSession.id, items: readyItems };
         });
       });
     });
-  }).then(function (items) {
-    if (!items.length) { statusEl.textContent = ""; return; }
+  }).then(function (result) {
+    var sessionId = result.sessionId;
+    var items = result.items;
+    if (!items.length) {
+      photosPickerFetch(token, "/sessions/" + sessionId, { method: "DELETE" }).catch(function () {});
+      statusEl.textContent = "";
+      return;
+    }
     var files = [];
     var failures = [];
     var i = 0;
     function downloadNext() {
       if (i >= items.length) {
+        // Every item is done downloading (or has permanently failed) --
+        // safe to let Google clean up the session now.
+        photosPickerFetch(token, "/sessions/" + sessionId, { method: "DELETE" }).catch(function () {});
         if (files.length) processFiles(files);
         // Don't silently drop failures — a video that couldn't be downloaded
         // used to just vanish with nothing but a console.error nobody sees.
@@ -1202,7 +1240,7 @@ $("#btn-import-google-photos").addEventListener("click", function () {
         return;
       }
       statusEl.textContent = "Downloading " + (i + 1) + " of " + items.length + " from Google Photos…";
-      downloadPickedItemAsFile(token, items[i]).then(function (file) {
+      downloadPickedItemAsFile(token, sessionId, items[i]).then(function (file) {
         files.push(file);
         i++;
         downloadNext();
