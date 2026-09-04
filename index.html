@@ -219,8 +219,21 @@
   }
   #page-drop-overlay .drop-panel .mark { font-size: 28px; }
 
-  .date-group-header { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--text); padding: 22px 28px 12px; margin: 0; }
+  .date-group-header { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
   .date-group .gallery { padding-top: 0; padding-bottom: 8px; }
+
+  /* Apple Photos-style floating date pill: hidden until you scroll, shows
+     whichever date group is currently at the top of the viewport, and
+     fades back out shortly after scrolling stops. See scroll-date-pill.js
+     logic further down for what drives it. */
+  .scroll-date-pill {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%) translateY(-8px);
+    background: rgba(20,18,12,0.82); color: #f5f1e6; font-family: var(--serif); font-size: 14px;
+    padding: 7px 18px; border-radius: 999px; z-index: 40; pointer-events: none;
+    opacity: 0; transition: opacity 0.25s ease, transform 0.25s ease; white-space: nowrap;
+    border: 1px solid rgba(245,241,230,0.18);
+  }
+  .scroll-date-pill.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
   .gallery { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 28px 48px; }
   .thumb {
     position: relative; border-radius: 6px; overflow: hidden;
@@ -2620,20 +2633,24 @@ function refreshGallery() {
 
     state.viewerOrder = items.map(function (item) { return item.record.id; });
 
+    // One continuous container for every item, regardless of day -- this
+    // is what lets the justified layout pack a row using, say, the last
+    // two photos from Tuesday and the first three from Wednesday, instead
+    // of leaving a ragged, under-filled row at the end of every single
+    // day. Each tile still remembers which day it belongs to (for the
+    // floating scroll pill), it just doesn't live in a separate container
+    // for that day anymore.
+    var grid = document.createElement("div");
+    grid.className = "gallery";
     groups.forEach(function (group) {
-      var wrap = document.createElement("div");
-      wrap.className = "date-group";
-      var header = document.createElement("div");
-      header.className = "date-group-header";
-      header.textContent = group.header;
-      wrap.appendChild(header);
-
-      var grid = document.createElement("div");
-      grid.className = "gallery";
-      group.items.forEach(function (item) { grid.appendChild(renderTile(item.record, item.metaJson)); });
-      wrap.appendChild(grid);
-      galleryRoot.appendChild(wrap);
+      group.items.forEach(function (item, idx) {
+        var tile = renderTile(item.record, item.metaJson);
+        tile.dataset.header = group.header;
+        if (idx === 0) tile.dataset.isDayFirst = "1"; // scroll-pill boundary marker, see updateScrollDatePill()
+        grid.appendChild(tile);
+      });
     });
+    galleryRoot.appendChild(grid);
 
     applyViewMode();
     relayoutAllGalleries();
@@ -2693,6 +2710,44 @@ function scheduleRelayout(grid) {
   relayoutTimers.set(grid, setTimeout(function () { layoutJustifiedGallery(grid); }, 150));
 }
 function relayoutAllGalleries() { $$(".gallery").forEach(layoutJustifiedGallery); }
+
+/* ---------------- Floating scroll date pill (Apple Photos style) ----------------
+   Date headers aren't shown inline anymore (see the .date-group-header CSS
+   rule above) -- instead this floating pill appears only while actively
+   scrolling, showing whichever day is currently at the top of the view,
+   and fades out shortly after scrolling stops. The whole page scrolls
+   (there's no separate inner scroll container), so this listens on the
+   window. */
+var scrollDatePill = document.createElement("div");
+scrollDatePill.className = "scroll-date-pill";
+document.body.appendChild(scrollDatePill);
+var scrollDatePillHideTimer = null;
+var SCROLL_PILL_TOP_THRESHOLD = 90; // roughly where the fixed toolbar ends
+
+function updateScrollDatePill() {
+  var boundaries = $$('.thumb[data-is-day-first="1"]');
+  if (!boundaries.length) { scrollDatePill.classList.remove("visible"); return; }
+  var current = null;
+  for (var i = 0; i < boundaries.length; i++) {
+    var rect = boundaries[i].getBoundingClientRect();
+    if (rect.top <= SCROLL_PILL_TOP_THRESHOLD) current = boundaries[i];
+    else break; // boundaries are in document order, so the first one below the line ends the search
+  }
+  if (!current) current = boundaries[0]; // scrolled above everything -- show the first day rather than nothing
+  scrollDatePill.textContent = current.dataset.header || "";
+  scrollDatePill.classList.add("visible");
+  clearTimeout(scrollDatePillHideTimer);
+  scrollDatePillHideTimer = setTimeout(function () { scrollDatePill.classList.remove("visible"); }, 900);
+}
+window.addEventListener("scroll", function () {
+  // rAF-throttled -- this fires on every pixel of scroll otherwise, which
+  // is far more often than the pill's text could ever need to change.
+  if (updateScrollDatePill._raf) return;
+  updateScrollDatePill._raf = requestAnimationFrame(function () {
+    updateScrollDatePill._raf = null;
+    updateScrollDatePill();
+  });
+}, { passive: true });
 window.addEventListener("resize", function () {
   clearTimeout(relayoutTimers.get(window));
   relayoutTimers.set(window, setTimeout(relayoutAllGalleries, 150));
@@ -2865,6 +2920,7 @@ function renderTile(record, metaJson) {
   var info = document.createElement("div");
   info.className = "info-row";
   var infoBits = [];
+  if (metaJson.date) infoBits.push(formatGroupHeader(metaJson.date));
   if (metaJson.size !== undefined && metaJson.size !== null) infoBits.push(formatSize(metaJson.size));
   if (metaJson.duration) infoBits.push(formatDuration(metaJson.duration));
   info.textContent = infoBits.join(" · ");
