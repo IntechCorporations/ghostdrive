@@ -1713,27 +1713,18 @@ function downloadBytesXHR(url, token, timeoutMs) {
    cross-origin XHR/fetch from third-party pages -- this failed with a
    generic "Load failed" in Safari and a generic "network error" in Chrome,
    which points at a CORS/redirect block on Google's end rather than a
-   browser quirk. Route the download through our own Supabase Edge Function
-   instead: it fetches the bytes server-side (no CORS applies server-to-
-   server) and streams them back with permissive CORS headers. */
-var PHOTOS_PROXY_URL = SUPABASE_URL + "/functions/v1/google-photos-proxyclever-responder";
+   browser quirk. Route the download through the Cloudflare Worker instead:
+   it fetches the bytes server-side (no CORS applies server-to-server) and
+   *streams* them back rather than buffering the whole response first --
+   important here specifically, since a Supabase Edge Function version of
+   this same proxy timed out (HTTP 504) trying to buffer a 2.67GB video
+   before responding; a Worker's fetch-passthrough streams as it goes. */
 function downloadViaProxy(url, token, timeoutMs) {
-  return new Promise(function (resolve, reject) {
-    var xhr = new XMLHttpRequest();
-    xhr.open("POST", PHOTOS_PROXY_URL);
-    xhr.responseType = "blob";
-    xhr.setRequestHeader("Content-Type", "application/json");
-    xhr.setRequestHeader("apikey", SUPABASE_ANON_KEY);
-    xhr.setRequestHeader("Authorization", "Bearer " + SUPABASE_ANON_KEY);
-    xhr.timeout = timeoutMs;
-    xhr.onload = function () {
-      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
-      else reject(new Error("HTTP " + xhr.status));
-    };
-    xhr.onerror = function () { reject(new Error("network error")); };
-    xhr.ontimeout = function () { reject(new Error("timed out")); };
-    xhr.send(JSON.stringify({ url: url, token: token }));
-  });
+  return r2Fetch("/gphotos-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: url, token: token }),
+  }).then(function (r) { return r.blob(); });
 }
 
 // baseUrls expire ~60 minutes after the picker session was created, and
