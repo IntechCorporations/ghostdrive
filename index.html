@@ -1270,10 +1270,31 @@ function friendlyError(err) {
 // field at all, which defaults to true here so nothing existing changes
 // behavior.
 function downloadObjectContent(record, fileKey, metaJson, onProgress) {
-  if (metaJson.contentEncrypted === false) {
-    return r2DownloadRaw(record.content_path, metaJson.mime, onProgress);
+  var t0 = Date.now();
+  var encrypted = metaJson.contentEncrypted !== false;
+  console.log("[ghostdrive] download start", {
+    id: record.id, path: record.content_path, encrypted: encrypted,
+    sizeMB: metaJson.size ? (metaJson.size / 1048576).toFixed(1) : "unknown", mime: metaJson.mime,
+  });
+  var lastLog = 0;
+  function wrappedProgress(loadedBytes, totalBytes) {
+    if (Date.now() - lastLog > 2000) { // throttled so a big file doesn't spam the console
+      lastLog = Date.now();
+      console.log("[ghostdrive] progress", (loadedBytes / 1048576).toFixed(1) + "MB /", (totalBytes / 1048576).toFixed(1) + "MB",
+        "elapsed " + ((Date.now() - t0) / 1000).toFixed(1) + "s");
+    }
+    if (onProgress) onProgress(loadedBytes, totalBytes);
   }
-  return r2DownloadDecrypted(record.content_path, fileKey, metaJson.mime, onProgress);
+  var p = encrypted
+    ? r2DownloadDecrypted(record.content_path, fileKey, metaJson.mime, wrappedProgress)
+    : r2DownloadRaw(record.content_path, metaJson.mime, wrappedProgress);
+  return p.then(function (blob) {
+    console.log("[ghostdrive] download DONE in", ((Date.now() - t0) / 1000).toFixed(1) + "s", "blob:", (blob.size / 1048576).toFixed(1) + "MB", blob.type);
+    return blob;
+  }).catch(function (err) {
+    console.error("[ghostdrive] download FAILED after", ((Date.now() - t0) / 1000).toFixed(1) + "s", err);
+    throw err;
+  });
 }
 
 var state = {
@@ -2612,22 +2633,23 @@ function prepareUpload(file, id, folder) {
   id = id || newUploadId();
   if (folder === undefined || folder === null) folder = currentFolder;
   var contentPath = state.userId + "/" + id + "/content";
-  // Small files get fully encrypted into one Blob up front and queued
-  // durably in IndexedDB, same as before -- that Blob is what lets an
-  // upload resume after a closed tab or crashed browser with no re-pick
-  // needed. A large file (bigger than one chunk) skips that: encrypting a
-  // multi-GB video into a single in-memory Blob (and then a second copy of
-  // it into IndexedDB) is exactly the kind of thing that crashes a mobile
-  // tab. Those stream straight from the File, chunk by chunk, into R2's
-  // multipart upload instead -- memory stays flat, but the tradeoff is that
-  // resume-after-reload isn't available for them (the original File object
-  // doesn't survive a reload either way, so this isn't a regression against
-  // what durability actually could have covered for something this size).
+  // File *content* is no longer encrypted at all -- an explicit, confirmed
+  // choice. The bytes sit in R2 exactly as uploaded, readable by anything
+  // with bucket access. What this buys: video plays natively in seconds
+  // (the browser streams it straight from a URL instead of JS having to
+  // download and decrypt the whole file first), and there's no crypto cost
+  // on upload or download.
+  // Metadata (name, date, folder, dimensions) is still encrypted, as is
+  // the thumbnail -- those are small and cost nothing to protect.
+  // isLarge no longer decides encryption; it only picks which upload path
+  // is memory-safe. A big file streams from disk chunk-by-chunk into R2's
+  // multipart upload rather than being read into one in-memory Blob, which
+  // is what used to crash the tab on multi-GB video.
   var isLarge = file.size > CHUNK_PLAIN_SIZE;
 
   var contentReady = isLarge
     ? Promise.resolve(null)
-    : file.arrayBuffer().then(function (buf) { return new Blob([encryptChunkFrame(fileKey, new Uint8Array(buf))]); });
+    : file.arrayBuffer().then(function (buf) { return new Blob([new Uint8Array(buf)]); });
 
   return contentReady.then(function (contentBlob) {
     return makeThumbnail(file, kind).catch(function () { return { blob: null, duration: null }; })
@@ -2655,7 +2677,7 @@ function prepareUpload(file, id, folder) {
             // though this whole metadata blob is itself still encrypted) so
             // download time knows which of the two transfer paths to use
             // without having to guess or probe.
-            contentEncrypted: !isLarge,
+            contentEncrypted: false,
           };
           var encryptedMetadata = toB64(encryptBytes(fileKey, new TextEncoder().encode(JSON.stringify(metadata))));
           var wrappedFileKey = toB64(encryptBytes(state.masterKey, fileKey));
@@ -2668,7 +2690,7 @@ function prepareUpload(file, id, folder) {
             id: id, stage: isLarge ? "prepared-large" : "prepared", contentPath: contentPath,
             contentBlob: contentBlob, // set for small files, null for large (see isLarge above)
             file: isLarge ? file : null, fileKey: isLarge ? fileKey : null, // only large uploads need these at upload time
-            plaintextContent: isLarge, // tells uploadQueueEntry to skip encryption for the content upload
+            plaintextContent: true, // content is never encrypted now -- see prepareUpload's note above
             thumbPath: thumbPath, thumbBlob: thumbBlob,
             dbPayload: dbPayload,
             fileName: file.name, fileSize: file.size, queuedAt: Date.now(),
@@ -2940,10 +2962,13 @@ function loadObjectMeta(record) {
 // cached thumbnail/preview for this id so the edit shows up immediately
 // instead of a stale cached version lingering.
 function replaceObjectContent(record, fileKey, metaJson, newContentBlob, newThumbBlob, metaPatch) {
-  var patchedMeta = Object.assign({}, metaJson, metaPatch);
+  // Content stays unencrypted after an edit, same as on upload -- and the
+  // metadata flag is forced to match, so a cropped/trimmed file doesn't end
+  // up in a different storage format than everything else.
+  var patchedMeta = Object.assign({}, metaJson, metaPatch, { contentEncrypted: false });
   var encryptedMetadata = toB64(encryptBytes(fileKey, new TextEncoder().encode(JSON.stringify(patchedMeta))));
   return newContentBlob.arrayBuffer().then(function (buf) {
-    return r2UploadFileEncrypted(record.content_path, new File([buf], "content"), fileKey, null);
+    return r2UploadFileRaw(record.content_path, new File([buf], "content"), null);
   }).then(function () {
     if (!newThumbBlob || !record.thumbnail_path) return null;
     return newThumbBlob.arrayBuffer().then(function (tb) {
@@ -3825,7 +3850,7 @@ function openViewer(id) {
     }
     var loadingLabel = document.createElement("div");
     loadingLabel.className = "viewer-loading-label";
-    loadingLabel.textContent = "Decrypting…";
+    loadingLabel.textContent = loaded.metaJson.contentEncrypted === false ? "Loading…" : "Decrypting…";
     mediaHost.appendChild(loadingLabel);
     var loadingBarTrack = document.createElement("div");
     loadingBarTrack.className = "viewer-loading-bar-track";
@@ -3848,6 +3873,39 @@ function openViewer(id) {
     // The function below is left in place, just not called, so it can be
     // turned back on (`true &&`) once that's actually confirmed to work
     // rather than risk leaving playback stuck mid-file on an unverified path.
+    // An unencrypted video (large files, by explicit choice) can be handed
+    // straight to the browser's own player as a plain URL. That's the real
+    // fix for "play within seconds": the browser streams it natively --
+    // starts on the first few hundred KB, seeks instantly anywhere in the
+    // file via its own range requests, and never needs the whole thing
+    // downloaded first. Encrypted content can't do this (the bytes are
+    // meaningless without decrypting them in JS first), which is exactly
+    // why it wasn't possible before.
+    if (record.kind === "video" && viewerState.metaJson.contentEncrypted === false) {
+      mediaHost.innerHTML = "";
+      var streamUrl = R2_WORKER_URL + "/object?path=" + encodeURIComponent(record.content_path)
+        + "&auth=" + encodeURIComponent(R2_AUTH_SECRET);
+      var streamVideo = document.createElement("video");
+      streamVideo.src = streamUrl;
+      streamVideo.controls = true;
+      streamVideo.autoplay = true;
+      streamVideo.addEventListener("error", function () {
+        var mediaErr = streamVideo.error;
+        var reason = mediaErr ? "code " + mediaErr.code + (mediaErr.message ? ": " + mediaErr.message : "") : "unknown reason";
+        console.error("[ghostdrive] native stream failed:", reason);
+        streamVideo.replaceWith(Object.assign(document.createElement("div"), {
+          className: "raw-note",
+          textContent: "Couldn't play this video (" + reason + "). It may use a codec this browser doesn't support.",
+        }));
+      });
+      mediaHost.appendChild(streamVideo);
+      viewerState.videoEl = streamVideo;
+      $("#btn-viewer-trim").classList.toggle("hidden", typeof streamVideo.captureStream !== "function");
+      var modalContentElStream = document.querySelector("#viewer-modal .modal-content");
+      if (modalContentElStream) modalContentElStream.classList.add("video-mode");
+      return "progressive"; // reuses the existing "already handled, skip the blob path" marker
+    }
+
     if (false && record.kind === "video" && window.MediaSource) {
       return playVideoProgressiveMSE(mediaHost, record, viewerState.fileKey, viewerState.metaJson, loadingBarFill, loadingLabel, id)
         .then(function () { return "progressive"; })
