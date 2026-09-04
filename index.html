@@ -365,6 +365,7 @@
     display: flex; gap: 10px; z-index: 2;
   }
   .reels-vnav { position: absolute; right: calc(16px + env(safe-area-inset-right, 0px)); bottom: 45%; display: flex; flex-direction: column; gap: 10px; z-index: 2; }
+  .reels-vote { position: absolute; left: calc(16px + env(safe-area-inset-left, 0px)); bottom: 45%; display: flex; flex-direction: column; gap: 10px; z-index: 2; }
   .reels-info {
     position: absolute; left: calc(16px + env(safe-area-inset-left, 0px)); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); right: 80px;
     color: #f5f1e6; font-size: 13.5px; text-shadow: 0 1px 4px rgba(0,0,0,0.8); z-index: 2;
@@ -645,6 +646,10 @@
     <button type="button" id="btn-reels-prev" class="reels-icon-btn" aria-label="Previous video">&#9650;</button>
     <button type="button" id="btn-reels-next" class="reels-icon-btn" aria-label="Next video">&#9660;</button>
   </div>
+  <div class="reels-vote">
+    <button type="button" id="btn-reels-upvote" class="reels-icon-btn" aria-label="I like this one" title="More like this">&#128077;</button>
+    <button type="button" id="btn-reels-downvote" class="reels-icon-btn" aria-label="Show me less of this" title="Less like this">&#128078;</button>
+  </div>
   <div id="reels-info" class="reels-info"></div>
   <div class="reels-seekbar-wrap" id="reels-seekbar-wrap">
     <div class="reels-time reels-time-current" id="reels-time-current">0:00</div>
@@ -789,17 +794,29 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress) {
   }).then(function (r) { return r.json(); }).then(function (res) {
     uploadId = res.uploadId;
     var offset = 0, partNumber = 0;
+    // A network blip on one part of a multi-hour upload shouldn't force
+    // starting the whole thing over from byte zero -- retry just that one
+    // part a few times (with a short growing delay, in case the blip is a
+    // brief network switch or a Wi-Fi drop) before giving up entirely.
+    function uploadPartWithRetry(frame, attempt) {
+      attempt = attempt || 1;
+      return r2Fetch(
+        "/mpu/part?path=" + encodeURIComponent(path) + "&uploadId=" + encodeURIComponent(uploadId) + "&partNumber=" + partNumber,
+        { method: "PUT", body: frame }
+      ).then(function (r) { return r.json(); }).catch(function (err) {
+        if (attempt >= 5) throw err;
+        return new Promise(function (resolve) { setTimeout(resolve, Math.min(1000 * Math.pow(2, attempt), 15000)); })
+          .then(function () { return uploadPartWithRetry(frame, attempt + 1); });
+      });
+    }
     function nextPart() {
       if (offset >= total) return Promise.resolve();
       partNumber++;
       var end = Math.min(offset + CHUNK_PLAIN_SIZE, total);
       return file.slice(offset, end).arrayBuffer().then(function (buf) {
         var frame = encryptChunkFrame(fileKey, new Uint8Array(buf));
-        return r2Fetch(
-          "/mpu/part?path=" + encodeURIComponent(path) + "&uploadId=" + encodeURIComponent(uploadId) + "&partNumber=" + partNumber,
-          { method: "PUT", body: frame }
-        );
-      }).then(function (r) { return r.json(); }).then(function (res2) {
+        return uploadPartWithRetry(frame);
+      }).then(function (res2) {
         parts.push({ partNumber: partNumber, etag: res2.etag });
         offset = end;
         if (onProgress) onProgress(offset, total);
@@ -849,6 +866,21 @@ function r2DownloadDecrypted(path, fileKey, mime, onProgress) {
   }).then(function (buf) {
     var parts = decryptFramedBuffer(fileKey, new Uint8Array(buf));
     return new Blob(parts, { type: mime || "application/octet-stream" });
+  }).catch(function (err) {
+    // Anything uploaded before the switch to R2 only ever existed in the
+    // old Supabase Storage bucket -- R2 starts out empty for it, so the
+    // fetch above 404s. Fall back to the old bucket (old, unframed
+    // single-secretbox format) rather than surfacing an error for every
+    // pre-migration photo and video, and quietly re-upload it to R2 in the
+    // new framed format so this fallback is only needed once per item.
+    return sb.storage.from(BUCKET).download(path).then(function (res) {
+      if (res.error) throw err; // genuinely missing in both places -- surface the original R2 error
+      return res.data.arrayBuffer();
+    }).then(function (legacyBuf) {
+      var plain = decryptBytes(fileKey, new Uint8Array(legacyBuf));
+      r2PutSmall(path, encryptChunkFrame(fileKey, plain)).catch(function () {}); // best-effort migration, don't block on it
+      return new Blob([plain], { type: mime || "application/octet-stream" });
+    });
   });
 }
 
@@ -2866,6 +2898,7 @@ var reelsState = {
   index: 0, shuffled: false, muted: true,
   cache: new Map(), cacheOrder: [], loadToken: 0,
   engagement: new Map(), // id -> { fileKey, doc, dirty } -- see the "Reels highlights" section below
+  lastTickTime: null, // last video.currentTime seen by the timeupdate handler, for watch-time accounting
 };
 
 function isReelsOpen() {
@@ -2937,7 +2970,7 @@ function openReels() {
     reelsState.originalOrder = order;
     // Opens shuffled by default, TikTok/IG-style -- shuffle can still be
     // switched off with the shuffle button, same toggle as before.
-    reelsState.order = shuffleArray(order);
+    reelsState.order = weightedShuffleByEngagement(order);
     reelsState.shuffled = true;
     $("#btn-reels-shuffle").classList.add("active");
     reelsState.index = 0;
@@ -2978,6 +3011,9 @@ function showReelAt(i) {
   reelsUpdateSeekUI(0, 0, 0);
   renderReelsHighlights(id);
   $("#reels-info").textContent = reelInfoText(id);
+  reelsState.lastTickTime = null; // don't count the jump from wherever the previous video was to 0:00 as watch time
+  renderReelsVoteUI(id);
+  recordReelPlay(id);
 
   var loadingEl = $("#reels-loading");
   var loadingFill = $("#reels-loading-fill");
@@ -3054,7 +3090,7 @@ $("#btn-reels-shuffle").addEventListener("click", function () {
   $("#btn-reels-shuffle").classList.toggle("active", reelsState.shuffled);
   if (reelsState.shuffled) {
     var rest = reelsState.originalOrder.filter(function (id) { return id !== currentId; });
-    reelsState.order = currentId !== undefined ? [currentId].concat(shuffleArray(rest)) : shuffleArray(rest);
+    reelsState.order = currentId !== undefined ? [currentId].concat(weightedShuffleByEngagement(rest)) : weightedShuffleByEngagement(rest);
     reelsState.index = 0;
   } else {
     reelsState.order = reelsState.originalOrder.slice();
@@ -3206,9 +3242,15 @@ $("#reels-video").addEventListener("timeupdate", function () {
   var video = $("#reels-video");
   if (!video.duration) return;
   reelsUpdateSeekUI(video.currentTime / video.duration, video.currentTime, video.duration);
+  recordReelWatchTick(video.currentTime);
 });
 $("#reels-video").addEventListener("seeked", function () {
   if (reelsSeekDrag) reelsDrawScrubFrame();
+  reelsState.lastTickTime = null; // a seek isn't watched time -- don't count the jump
+});
+$("#reels-video").addEventListener("ended", function () {
+  recordReelCompletion(reelsState.order[reelsState.index]);
+  reelsNext(); // TikTok-style auto-advance once a video finishes on its own
 });
 
 var reelsSeekDrag = null; // { pointerId, wasPlaying }
@@ -3287,7 +3329,22 @@ function loadEngagementDoc(record, fileKey) {
 }
 
 function blankEngagementDoc() {
-  return { v: 1, n: REELS_HL_BUCKETS, counts: new Array(REELS_HL_BUCKETS).fill(0), totalSeeks: 0, predicted: null, predictedSource: null };
+  return {
+    v: 1, n: REELS_HL_BUCKETS, counts: new Array(REELS_HL_BUCKETS).fill(0), totalSeeks: 0, predicted: null, predictedSource: null,
+    // Feed-personalization signals, same idea as any short-video app uses to
+    // learn what you actually want to see more of -- kept here alongside the
+    // highlight data because it's the same private, per-video, encrypted
+    // document, never sent anywhere but Supabase as ciphertext. The vote
+    // button is the only part of this that's visible; watch time, plays,
+    // and completions are recorded quietly in the background (there's no
+    // on-screen "retention rate" readout, same as you'd never see TikTok's
+    // internal scoring -- just a feed that quietly gets more like what you
+    // watch and less like what you skip or downvote).
+    vote: null,        // 'up' | 'down' | null
+    watchSeconds: 0,    // cumulative forward-playback time across all views
+    plays: 0,           // number of times this video was opened in Reels
+    completions: 0,     // number of times playback reached the end
+  };
 }
 
 // A short, sparse pass over one decoded audio channel: average energy per
@@ -3404,6 +3461,120 @@ function recordReelsEngagementSeek(frac) {
   entry.dirty = true;
   scheduleEngagementSave(id);
   refreshReelsHighlightsIfCurrent(id);
+}
+
+function recordReelsEngagementSeek(frac) {
+  var id = reelsState.order[reelsState.index];
+  var entry = id !== undefined ? reelsState.engagement.get(id) : null;
+  if (!entry) return; // engagement doc isn't ready yet -- skip rather than block the seek
+  var n = entry.doc.n;
+  var idx = Math.max(0, Math.min(n - 1, Math.floor(frac * n)));
+  entry.doc.counts[idx] = (entry.doc.counts[idx] || 0) + 1;
+  entry.doc.totalSeeks = (entry.doc.totalSeeks || 0) + 1;
+  entry.dirty = true;
+  scheduleEngagementSave(id);
+  refreshReelsHighlightsIfCurrent(id);
+}
+
+// Called on every timeupdate tick while a reel plays. Only counts forward
+// playback since the *previous* tick -- a seek (handled separately, which
+// clears lastTickTime first) or a big jump never gets counted as "watched".
+function recordReelWatchTick(currentTime) {
+  var id = reelsState.order[reelsState.index];
+  var entry = id !== undefined ? reelsState.engagement.get(id) : null;
+  var last = reelsState.lastTickTime;
+  reelsState.lastTickTime = currentTime;
+  if (!entry || last === null) return;
+  var delta = currentTime - last;
+  if (delta <= 0 || delta > 1.5) return; // not forward playback, or too big a jump to be a real tick
+  entry.doc.watchSeconds = (entry.doc.watchSeconds || 0) + delta;
+  entry.dirty = true;
+  scheduleEngagementSave(id);
+}
+
+function recordReelPlay(id) {
+  var entry = reelsState.engagement.get(id);
+  if (!entry) return; // reelsPrepareEngagement() runs once the video's bytes are decrypted -- fine to miss this first tick
+  entry.doc.plays = (entry.doc.plays || 0) + 1;
+  entry.dirty = true;
+  scheduleEngagementSave(id);
+}
+
+function recordReelCompletion(id) {
+  var entry = id !== undefined ? reelsState.engagement.get(id) : null;
+  if (!entry) return;
+  entry.doc.completions = (entry.doc.completions || 0) + 1;
+  entry.dirty = true;
+  scheduleEngagementSave(id);
+}
+
+function setReelVote(id, vote) {
+  var entry = reelsState.engagement.get(id);
+  if (!entry) return;
+  entry.doc.vote = entry.doc.vote === vote ? null : vote; // tapping an active vote clears it, like toggling a like
+  entry.dirty = true;
+  scheduleEngagementSave(id);
+  renderReelsVoteUI(id);
+}
+
+function renderReelsVoteUI(id) {
+  var entry = reelsState.engagement.get(id);
+  var vote = entry ? entry.doc.vote : null;
+  $("#btn-reels-upvote").classList.toggle("active", vote === "up");
+  $("#btn-reels-downvote").classList.toggle("active", vote === "down");
+}
+
+$("#btn-reels-upvote").addEventListener("click", function () {
+  setReelVote(reelsState.order[reelsState.index], "up");
+});
+$("#btn-reels-downvote").addEventListener("click", function () {
+  setReelVote(reelsState.order[reelsState.index], "down");
+});
+
+// A single number that stands in for "how much do I want to see more of
+// this" -- the same kind of blend a short-video app's ranking model would
+// lean on, just computed locally over your own private, on-device stats
+// instead of anything shared or aggregated across people:
+//   - retention: average fraction of the video actually watched per play
+//     (the single strongest engagement signal these algorithms use)
+//   - completion rate: how often a play reaches the natural end
+//   - vote: an explicit, deliberate override in either direction
+// The result only ever influences the shuffle order of your own vault --
+// nothing here is visible as a number anywhere in the UI.
+function engagementScore(doc, durationSec) {
+  var plays = doc.plays || 0;
+  var retention = (plays > 0 && durationSec > 0) ? Math.min(1, (doc.watchSeconds || 0) / (durationSec * plays)) : 0;
+  var completionRate = plays > 0 ? Math.min(1, (doc.completions || 0) / plays) : 0;
+  var voteBonus = doc.vote === "up" ? 2 : doc.vote === "down" ? -3 : 0;
+  var base = plays > 0 ? (retention * 2 + completionRate * 1.5) : 1; // unseen videos start neutral, not penalized
+  return Math.max(0.05, base + voteBonus); // floor above zero so a downvote makes something rare, not literally unreachable
+}
+
+// A weighted shuffle rather than a uniform one: each pass picks a random
+// remaining item with probability proportional to its score, so videos
+// you tend to watch through (or upvote) surface earlier and more often
+// without the order becoming fully predictable -- still a shuffle, just
+// one that quietly leans toward what you actually watch.
+function weightedShuffleByEngagement(ids) {
+  var pool = ids.map(function (id) {
+    var record = reelsState.records.get(id);
+    var loaded = record ? loadObjectMeta(record) : null;
+    var doc = loaded ? (loadEngagementDoc(record, loaded.fileKey) || blankEngagementDoc()) : blankEngagementDoc();
+    var duration = (loaded && loaded.metaJson.duration) || 0;
+    return { id: id, weight: engagementScore(doc, duration) };
+  });
+  var out = [];
+  while (pool.length) {
+    var total = pool.reduce(function (s, p) { return s + p.weight; }, 0);
+    var r = Math.random() * total;
+    var acc = 0, pick = pool.length - 1;
+    for (var i = 0; i < pool.length; i++) {
+      acc += pool[i].weight;
+      if (r <= acc) { pick = i; break; }
+    }
+    out.push(pool.splice(pick, 1)[0].id);
+  }
+  return out;
 }
 
 function scheduleEngagementSave(id) {
