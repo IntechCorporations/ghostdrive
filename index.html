@@ -321,8 +321,13 @@
   .modal-nav:hover { background: rgba(20,18,12,0.8); }
   .modal-prev { left: 10px; }
   .modal-next { right: 10px; }
-  #viewer-media { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; min-height: 120px; margin-bottom: 18px; }
+  #viewer-media { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; min-height: 120px; margin-bottom: 18px; position: relative; }
   #viewer-media img, #viewer-media video { max-width: 100%; max-height: 50vh; border-radius: 8px; }
+  #viewer-media img.viewer-poster { filter: blur(1.5px) brightness(0.75); }
+  .viewer-loading-label {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: rgba(20,18,12,0.72); color: #f5f1e6; font-size: 13px; padding: 8px 16px; border-radius: 999px;
+  }
   .raw-note { font-size: 13px; color: var(--text-dim); text-align: center; }
   .raw-download-link { color: var(--brass-strong); font-weight: 600; }
   .viewer-meta { display: flex; flex-direction: column; gap: 11px; }
@@ -876,7 +881,21 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress, signal) {
 }
 // Downloads and decrypts a framed object back into a Blob, with optional
 // byte-level progress while the (single, whole-object) GET streams down.
-function r2DownloadDecrypted(path, fileKey, mime, onProgress) {
+// Frame sizes are fixed for anything actually chunked on upload (every
+// frame is exactly CHUNK_PLAIN_SIZE of plaintext except the last) -- see
+// r2UploadFileEncrypted. That predictability is what makes parallel range
+// requests possible at all: frame boundaries can be computed up front
+// instead of needing to read the file sequentially to find them.
+var FRAME_OVERHEAD = 4 + 24 + 16; // length-prefix + secretbox nonce + Poly1305 MAC
+var PARALLEL_DOWNLOAD_CONCURRENCY = 4;
+
+// The always-correct path: reads the object as one stream, decrypting each
+// frame the instant it's fully arrived. Doesn't assume anything about frame
+// sizes, so it's what everything falls back to if the parallel path's
+// assumption about uniform frame sizes doesn't hold (e.g. an object that
+// was never chunked -- a small file, or one of the rare self-healed
+// single-frame legacy items).
+function downloadFramedSequential(path, fileKey, mime, onProgress) {
   return r2Fetch("/object?path=" + encodeURIComponent(path)).then(function (r) {
     if (!r.body || !r.body.getReader) {
       // No streaming body available in this environment -- only option
@@ -931,7 +950,73 @@ function r2DownloadDecrypted(path, fileKey, mime, onProgress) {
       });
     }
     return pump();
-  }).catch(function (framedErr) {
+  });
+}
+
+// The fast path: computes where every frame *should* start and end from the
+// object's total size alone, then fetches several of them concurrently via
+// HTTP Range requests instead of one single connection -- meaningfully
+// faster on most links, since a lot of ISPs/routers throttle per
+// connection rather than per origin. Each range request lands on exactly
+// one frame's bytes (never a partial frame), so each one can be decrypted
+// the moment it arrives with no reassembly needed beyond putting the
+// already-decrypted parts back in order.
+function downloadFramedParallel(path, fileKey, mime, onProgress, total) {
+  var frameOnDiskSize = CHUNK_PLAIN_SIZE + FRAME_OVERHEAD;
+  var ranges = [];
+  for (var offset = 0; offset < total; offset += frameOnDiskSize) {
+    ranges.push({ start: offset, end: Math.min(offset + frameOnDiskSize, total) - 1 });
+  }
+  var parts = new Array(ranges.length);
+  var loaded = 0;
+  var next = 0;
+  function fetchOne(i) {
+    var range = ranges[i];
+    return r2Fetch("/object?path=" + encodeURIComponent(path), { headers: { Range: "bytes=" + range.start + "-" + range.end } })
+      .then(function (r) { return r.arrayBuffer(); })
+      .then(function (buf) {
+        var bytes = new Uint8Array(buf);
+        var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        var len = view.getUint32(0, true);
+        if (4 + len !== bytes.length) throw new Error("frame boundary assumption didn't hold"); // triggers the sequential fallback below
+        parts[i] = decryptBytes(fileKey, bytes.subarray(4, 4 + len));
+        loaded += bytes.length;
+        if (onProgress) onProgress(loaded, total);
+      });
+  }
+  function worker() {
+    if (next >= ranges.length) return Promise.resolve();
+    var i = next++;
+    return fetchOne(i).then(worker);
+  }
+  var workers = [];
+  for (var w = 0; w < Math.min(PARALLEL_DOWNLOAD_CONCURRENCY, ranges.length); w++) workers.push(worker());
+  return Promise.all(workers).then(function () {
+    if (!parts.length || parts.indexOf(undefined) !== -1) throw new Error("incomplete download");
+    return new Blob(parts, { type: mime || "application/octet-stream" });
+  });
+}
+
+function r2DownloadDecrypted(path, fileKey, mime, onProgress) {
+  var tier1 = r2Fetch("/object?path=" + encodeURIComponent(path), { method: "HEAD" }).then(function (headRes) {
+    var total = Number(headRes.headers.get("Content-Length")) || 0;
+    var frameOnDiskSize = CHUNK_PLAIN_SIZE + FRAME_OVERHEAD;
+    // Only worth the parallel path -- and only safe to assume uniform
+    // frame boundaries -- for something actually chunked on upload.
+    // Anything smaller than two frames (a small file, a thumbnail, or one
+    // of the rare self-healed single-frame legacy items) just doesn't
+    // have multiple ranges to split across.
+    if (total > frameOnDiskSize * 1.5) {
+      return downloadFramedParallel(path, fileKey, mime, onProgress, total)
+        .catch(function () { return downloadFramedSequential(path, fileKey, mime, onProgress); });
+    }
+    return downloadFramedSequential(path, fileKey, mime, onProgress);
+  }).catch(function () {
+    // HEAD itself failed (unsupported in some edge case, or a genuine
+    // network hiccup) -- the sequential path doesn't depend on it at all.
+    return downloadFramedSequential(path, fileKey, mime, onProgress);
+  });
+  return tier1.catch(function (framedErr) {
     // Tier 2: the object IS in R2 (so this isn't a migration gap), but its
     // bytes don't parse as the current chunk-framed format. This is what a
     // handful of items can be stuck in from a brief window today where an
@@ -3345,7 +3430,26 @@ function openViewer(id) {
     $("#viewer-folder").value = loaded.metaJson.folder || "";
 
     var mediaHost = $("#viewer-media");
-    mediaHost.textContent = "Decrypting…";
+    mediaHost.innerHTML = "";
+    // The thumbnail is already sitting in cache (it's what rendered the
+    // gallery tile) or loads near-instantly either way -- showing it
+    // immediately instead of a blank "Decrypting…" placeholder means
+    // there's something to look at right away instead of a wait with
+    // nothing to show for it, even though the actual video isn't ready yet.
+    if (record.kind === "video" || record.kind === "photo") {
+      loadThumbnail(record).then(function (thumbUrl) {
+        if (viewerState.id !== id || !thumbUrl) return; // viewer moved on, or no thumbnail to show
+        var poster = mediaHost.querySelector("img.viewer-poster");
+        if (poster) poster.src = thumbUrl;
+      });
+      var posterImg = document.createElement("img");
+      posterImg.className = "viewer-poster";
+      mediaHost.appendChild(posterImg);
+    }
+    var loadingLabel = document.createElement("div");
+    loadingLabel.className = "viewer-loading-label";
+    loadingLabel.textContent = "Decrypting…";
+    mediaHost.appendChild(loadingLabel);
     var modalContentElInit = document.querySelector("#viewer-modal .modal-content");
     if (modalContentElInit) modalContentElInit.classList.remove("video-mode");
     showModal("#viewer-modal");
@@ -3368,6 +3472,18 @@ function openViewer(id) {
     if (isVideo) {
       var video = document.createElement("video");
       video.src = url; video.controls = true; video.autoplay = true;
+      video.addEventListener("error", function () {
+        // The decrypt succeeded (we got this far) -- this is the browser
+        // itself failing to decode/play the actual video stream, which
+        // previously failed completely silently: no promise rejects here,
+        // so openViewer's own .catch() never saw it.
+        var mediaErr = video.error;
+        var reason = mediaErr ? "code " + mediaErr.code + (mediaErr.message ? ": " + mediaErr.message : "") : "unknown reason";
+        video.replaceWith(Object.assign(document.createElement("div"), {
+          className: "raw-note",
+          textContent: "This video downloaded and decrypted fine, but this browser can't play it back (" + reason + "). It may use a codec this browser doesn't support.",
+        }));
+      });
       mediaHost.appendChild(video);
       return;
     }
