@@ -916,18 +916,23 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress, signal) {
       return r2PutSmall(path, encryptChunkFrame(fileKey, new Uint8Array(buf)), signal);
     }).then(function () { if (onProgress) onProgress(total, total); });
   }
-  var uploadId, parts = [];
+  var uploadId;
+  var ranges = [];
+  for (var offset = 0, partNumber = 1; offset < total; offset += CHUNK_PLAIN_SIZE, partNumber++) {
+    ranges.push({ partNumber: partNumber, start: offset, end: Math.min(offset + CHUNK_PLAIN_SIZE, total) });
+  }
+  var parts = new Array(ranges.length);
+  var loaded = 0;
   return r2Fetch("/mpu/create", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path: path }), signal: signal,
   }).then(function (r) { return r.json(); }).then(function (res) {
     uploadId = res.uploadId;
-    var offset = 0, partNumber = 0;
     // A network blip on one part of a multi-hour upload shouldn't force
     // starting the whole thing over from byte zero -- retry just that one
     // part a few times (with a short growing delay, in case the blip is a
     // brief network switch or a Wi-Fi drop) before giving up entirely.
-    function uploadPartWithRetry(frame, attempt) {
+    function uploadPartWithRetry(partNumber, frame, attempt) {
       attempt = attempt || 1;
       return r2Fetch(
         "/mpu/part?path=" + encodeURIComponent(path) + "&uploadId=" + encodeURIComponent(uploadId) + "&partNumber=" + partNumber,
@@ -936,24 +941,27 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress, signal) {
         if (signal && signal.aborted) throw err; // a deliberate cancel -- don't keep retrying it
         if (attempt >= 5) throw err;
         return new Promise(function (resolve) { setTimeout(resolve, Math.min(1000 * Math.pow(2, attempt), 15000)); })
-          .then(function () { return uploadPartWithRetry(frame, attempt + 1); });
+          .then(function () { return uploadPartWithRetry(partNumber, frame, attempt + 1); });
       });
     }
-    function nextPart() {
-      if (offset >= total) return Promise.resolve();
-      partNumber++;
-      var end = Math.min(offset + CHUNK_PLAIN_SIZE, total);
-      return file.slice(offset, end).arrayBuffer().then(function (buf) {
+    var next = 0;
+    function worker() {
+      if (next >= ranges.length) return Promise.resolve();
+      var i = next++;
+      var range = ranges[i];
+      return file.slice(range.start, range.end).arrayBuffer().then(function (buf) {
         var frame = encryptChunkFrame(fileKey, new Uint8Array(buf));
-        return uploadPartWithRetry(frame);
+        return uploadPartWithRetry(range.partNumber, frame);
       }).then(function (res2) {
-        parts.push({ partNumber: partNumber, etag: res2.etag });
-        offset = end;
-        if (onProgress) onProgress(offset, total);
-        return nextPart();
+        parts[i] = { partNumber: range.partNumber, etag: res2.etag };
+        loaded += range.end - range.start;
+        if (onProgress) onProgress(loaded, total);
+        return worker();
       });
     }
-    return nextPart();
+    var workers = [];
+    for (var w = 0; w < Math.min(PARALLEL_TRANSFER_CONCURRENCY, ranges.length); w++) workers.push(worker());
+    return Promise.all(workers);
   }).then(function () {
     return r2Fetch("/mpu/complete", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -977,7 +985,7 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress, signal) {
 // requests possible at all: frame boundaries can be computed up front
 // instead of needing to read the file sequentially to find them.
 var FRAME_OVERHEAD = 4 + 24 + 16; // length-prefix + secretbox nonce + Poly1305 MAC
-var PARALLEL_DOWNLOAD_CONCURRENCY = 4;
+var PARALLEL_TRANSFER_CONCURRENCY = 4;
 
 // The always-correct path: reads the object as one stream, decrypting each
 // frame the instant it's fully arrived. Doesn't assume anything about frame
@@ -1080,7 +1088,7 @@ function downloadFramedParallel(path, fileKey, mime, onProgress, total) {
     return fetchOne(i).then(worker);
   }
   var workers = [];
-  for (var w = 0; w < Math.min(PARALLEL_DOWNLOAD_CONCURRENCY, ranges.length); w++) workers.push(worker());
+  for (var w = 0; w < Math.min(PARALLEL_TRANSFER_CONCURRENCY, ranges.length); w++) workers.push(worker());
   return Promise.all(workers).then(function () {
     if (!parts.length || parts.indexOf(undefined) !== -1) throw new Error("incomplete download");
     return new Blob(parts, { type: mime || "application/octet-stream" });
