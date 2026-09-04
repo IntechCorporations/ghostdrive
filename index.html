@@ -1143,10 +1143,14 @@ function backfillGoogleWrapIfNeeded(user, mk, vaultRow) {
   if (vaultRow && vaultRow.google_wrapped_mk) return Promise.resolve();
   var gSalt = newSalt();
   var gKek = deriveKey(googleAccountSecret(user.id), gSalt);
-  return sb.from("vaults").update({
+  // Wrapped in Promise.resolve() because a Supabase query builder is only
+  // "thenable" (works with .then()/await) -- it doesn't reliably expose
+  // .catch() as a real method the way a native Promise does, and both call
+  // sites below chain .catch() directly onto this function's return value.
+  return Promise.resolve(sb.from("vaults").update({
     google_wrapped_mk: toB64(encryptBytes(gKek, mk)),
     google_kdf_salt: gSalt,
-  }).eq("user_id", user.id);
+  }).eq("user_id", user.id));
 }
 function ensureVaultAndUnlock(password) {
   var theUser;
@@ -1402,7 +1406,7 @@ $("#btn-set-new-password").addEventListener("click", function () {
     var gSalt = newSalt();
     var gKek = deriveKey(googleAccountSecret(user.id), gSalt);
     var patch = isGoogleUser(user) ? { google_wrapped_mk: toB64(encryptBytes(gKek, mk)), google_kdf_salt: gSalt } : null;
-    var chain = patch ? sb.from("vaults").update(patch).eq("user_id", state.userId).catch(function () {}) : Promise.resolve();
+    var chain = patch ? Promise.resolve(sb.from("vaults").update(patch).eq("user_id", state.userId)).catch(function () {}) : Promise.resolve();
     return chain.then(function () { enterVault(); });
   }).catch(function (err) { errEl.textContent = friendlyError(err); });
 });
