@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ghostdrive</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
 <!-- Pulls the embedded JPEG preview out of camera RAW files (CR2/NEF/ARW/DNG/...)
      and other formats browsers can't decode natively -- browsers can't render
      RAW bytes directly, but almost every RAW format stores a JPEG preview
      inside its EXIF data, which this reads without any raw-decoding of our own. -->
-<script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.min.js"></script>
 <style>
   :root {
     --ink: #15161a; --ink-2: #1c1e23; --ink-3: #23252b; --line: #34363d;
@@ -110,25 +110,7 @@
   .toolbar-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   #file-count { color: var(--text-dim); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
   .toolbar-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .sort-control select, .type-control select, .view-control select { padding: 6px 10px; font-size: 13px; }
-
-  /* Folder chips -- a row of pills instead of a dropdown so folders can
-     double as drag-and-drop targets (see the "Folders" JS section). */
-  .folder-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .folder-chip {
-    padding: 6px 12px; border-radius: 20px; border: 1px solid var(--line);
-    background: transparent; color: var(--text-dim); font-size: 13px; cursor: pointer;
-    white-space: nowrap; transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.08s;
-  }
-  .folder-chip:hover { border-color: var(--text-dim); color: var(--text); }
-  .folder-chip.active { background: var(--brass); border-color: var(--brass); color: #1c1406; font-weight: 600; }
-  .folder-chip.drag-over { border-color: var(--brass); background: var(--brass-tint); color: var(--brass-strong); transform: scale(1.05); }
-  .folder-chip-new { border-style: dashed; }
-  .folder-chip-new:hover { border-color: var(--brass); color: var(--brass-strong); }
-  .folder-chip-new.drag-over { border-style: solid; }
-  /* The tile actively being dragged -- lets go, visually, of the spot it's
-     leaving while it's mid-drag over a folder chip. */
-  .thumb.dragging { opacity: 0.4; }
+  .sort-control select, .folder-control select, .type-control select, .view-control select { padding: 6px 10px; font-size: 13px; }
   .tile-size-control { display: flex; align-items: center; gap: 6px; }
   .tile-size-control .tile-size-icon { font-size: 13px; color: var(--text-dim); }
   .tile-size-control input[type="range"] { width: 100px; accent-color: var(--brass); }
@@ -309,7 +291,11 @@
     position: relative; background: var(--ink-2); border-radius: 12px; padding: 26px;
     max-width: 760px; width: 92%; max-height: 88vh; overflow: auto; border: 1px solid var(--line);
   }
-  .modal-close { position: absolute; top: 12px; right: 16px; background: transparent; border: none; font-size: 22px; color: var(--text-dim); padding: 4px 8px; }
+  .modal-close {
+    position: absolute; top: 12px; right: 14px; z-index: 10; background: rgba(20,18,12,0.55); border: none;
+    font-size: 22px; line-height: 1; color: #f5f1e6; padding: 0; width: 34px; height: 34px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+  }
   .modal-nav {
     position: absolute; top: 50%; transform: translateY(-50%); background: rgba(20,18,12,0.55);
     color: #f5f1e6; border: none; width: 40px; height: 40px; border-radius: 50%;
@@ -702,7 +688,7 @@
             </select>
           </div>
           <div class="folder-control">
-            <div id="folder-chips" class="folder-chips" role="tablist" aria-label="Folders"></div>
+            <select id="folder-select" aria-label="Folder"></select>
           </div>
           <div class="sort-control">
             <select id="sort-select">
@@ -3529,119 +3515,46 @@ window.addEventListener("wheel", function (e) {
    Folders are just a field inside each item's already-encrypted metadata —
    there's no separate folder table, so Supabase never learns folder names
    either. "All items" (an empty string) means no filter; a brand-new folder
-   is remembered client-side until the first item is actually moved into it.
-
-   Rendered as a row of chips (rather than a dropdown) so folders can also
-   work as drop targets: dragging a tile (or the current multi-selection)
-   onto a chip moves it there, same as dragging a file onto a folder in
-   Finder/Explorer/Google Drive. A custom drag MIME type keeps this
-   separate from the page's existing "drop an OS file to upload it"
-   handling -- an internal item-drag never carries a "Files" entry, so it
-   never triggers that path, and vice versa. */
+   is remembered client-side until the first item is actually moved into it. */
 var currentFolder = "";
 var knownFolders = new Set();
-var GHOSTDRIVE_DRAG_MIME = "application/x-ghostdrive-ids";
-function isItemDrag(e) {
-  var types = (e.dataTransfer && e.dataTransfer.types) || [];
-  return Array.prototype.indexOf.call(types, GHOSTDRIVE_DRAG_MIME) !== -1;
-}
-function getDraggedItemIds(e) {
-  try {
-    var raw = e.dataTransfer.getData(GHOSTDRIVE_DRAG_MIME);
-    return raw ? JSON.parse(raw) : [];
-  } catch (err) { return []; }
-}
-// Moves one or more items into (or out of, for folderName === "") a
-// folder. Each record's metadata has to be individually decrypted, patched
-// and re-encrypted (see patchObjectMetadata) since the folder name lives
-// inside that per-item encrypted blob, same as the filename/date.
-function moveItemsToFolder(ids, folderName) {
-  if (!ids || !ids.length) return Promise.resolve();
-  return sb.from("objects").select("*").in("id", ids).then(function (res) {
-    if (res.error) throw res.error;
-    var records = res.data || [];
-    return records.reduce(function (p, record) {
-      return p.then(function () {
-        var loaded = loadObjectMeta(record);
-        if ((loaded.metaJson.folder || "") === folderName) return null; // already there
-        return patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, { folder: folderName });
-      });
-    }, Promise.resolve());
-  }).then(function () {
-    if (folderName) knownFolders.add(folderName);
+
+$("#folder-select").addEventListener("change", function (e) {
+  var val = e.target.value;
+  if (val === "__new__") {
+    var name = (prompt("Name this folder:") || "").trim();
+    if (!name) { renderFolderOptions(); return; }
+    knownFolders.add(name);
+    currentFolder = name;
     refreshGallery();
-  }).catch(function (err) {
-    console.error("move to folder failed", err);
-    alert("Couldn't move item(s) to that folder: " + friendlyError(err));
-  });
-}
-function promptNewFolderName() {
-  return (prompt("Name this folder:") || "").trim();
-}
+    return;
+  }
+  currentFolder = val;
+  refreshGallery();
+});
+
 function renderFolderOptions(allFolders) {
   var folders = Array.from(new Set([].concat(Array.from(knownFolders), allFolders || []))).sort(function (a, b) {
     return a.localeCompare(b);
   });
-  var host = $("#folder-chips");
-  host.innerHTML = "";
-
-  function makeChip(name, label, extraClass) {
-    var chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "folder-chip" + (extraClass ? " " + extraClass : "") + (currentFolder === name && !extraClass ? " active" : "");
-    chip.textContent = label;
-    chip.addEventListener("dragover", function (e) {
-      if (!isItemDrag(e)) return;
-      e.preventDefault();
-      chip.classList.add("drag-over");
-    });
-    chip.addEventListener("dragleave", function () { chip.classList.remove("drag-over"); });
-    chip.addEventListener("drop", function (e) {
-      if (!isItemDrag(e)) return;
-      e.preventDefault();
-      chip.classList.remove("drag-over");
-      var ids = getDraggedItemIds(e);
-      if (ids.length) moveItemsToFolder(ids, name);
-    });
-    return chip;
-  }
-
-  var allChip = makeChip("", "All items");
-  allChip.addEventListener("click", function () { currentFolder = ""; refreshGallery(); });
-  host.appendChild(allChip);
+  var select = $("#folder-select");
+  select.innerHTML = "";
+  var allOpt = document.createElement("option");
+  allOpt.value = "";
+  allOpt.textContent = "All items";
+  select.appendChild(allOpt);
   folders.forEach(function (name) {
-    var chip = makeChip(name, name);
-    chip.addEventListener("click", function () { currentFolder = name; refreshGallery(); });
-    host.appendChild(chip);
+    var opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
   });
+  var newOpt = document.createElement("option");
+  newOpt.value = "__new__";
+  newOpt.textContent = "+ New folder…";
+  select.appendChild(newOpt);
+  select.value = currentFolder;
 
-  var newChip = document.createElement("button");
-  newChip.type = "button";
-  newChip.className = "folder-chip folder-chip-new";
-  newChip.textContent = "+ New folder";
-  newChip.title = "Click to create, or drag items here to create and move them in one step";
-  newChip.addEventListener("click", function () {
-    var name = promptNewFolderName();
-    if (!name) return;
-    knownFolders.add(name);
-    currentFolder = name;
-    refreshGallery();
-  });
-  newChip.addEventListener("dragover", function (e) { if (isItemDrag(e)) { e.preventDefault(); newChip.classList.add("drag-over"); } });
-  newChip.addEventListener("dragleave", function () { newChip.classList.remove("drag-over"); });
-  newChip.addEventListener("drop", function (e) {
-    if (!isItemDrag(e)) return;
-    e.preventDefault();
-    newChip.classList.remove("drag-over");
-    var ids = getDraggedItemIds(e);
-    if (!ids.length) return;
-    var name = promptNewFolderName();
-    if (!name) return;
-    moveItemsToFolder(ids, name);
-  });
-  host.appendChild(newChip);
-
-  // Still used by the viewer's folder text field for autocomplete.
   var datalist = $("#folder-suggestions");
   datalist.innerHTML = "";
   folders.forEach(function (name) {
@@ -4028,19 +3941,6 @@ function renderTile(record, metaJson) {
   // their thumbnail image actually loads and reports its real dimensions.
   tile.dataset.aspect = (metaJson.width && metaJson.height) ? (metaJson.width / metaJson.height) : 1;
   if (selectedIds.has(record.id)) tile.classList.add("selected");
-
-  // Drag this tile onto a folder chip to move it there. If the tile being
-  // dragged is part of the current multi-selection, the whole selection
-  // rides along -- same convention as Finder/Explorer/Google Drive: drag
-  // any selected item and everything selected moves together.
-  tile.draggable = true;
-  tile.addEventListener("dragstart", function (e) {
-    var ids = (selectedIds.has(record.id) && selectedIds.size > 0) ? Array.from(selectedIds) : [record.id];
-    e.dataTransfer.setData(GHOSTDRIVE_DRAG_MIME, JSON.stringify(ids));
-    e.dataTransfer.effectAllowed = "move";
-    tile.classList.add("dragging");
-  });
-  tile.addEventListener("dragend", function () { tile.classList.remove("dragging"); });
 
   if (record.thumbnail_path) {
     var img = document.createElement("img");
@@ -4649,10 +4549,21 @@ document.addEventListener("keydown", function (e) {
 
 $("#btn-viewer-close").addEventListener("click", closeViewer);
 function closeViewer() {
-  if (viewerState.mediaUrl) URL.revokeObjectURL(viewerState.mediaUrl);
-  if (viewerState.previewUrl) URL.revokeObjectURL(viewerState.previewUrl);
-  exitCropMode();
-  exitTrimMode();
+  // Defensive: force every overlay this modal can enter (crop box, trim
+  // bar, details panel) back to hidden directly, rather than only relying
+  // on exitCropMode/exitTrimMode running cleanly below. Any of those can
+  // throw or no-op if the viewer is in an unexpected state, which would
+  // otherwise leave an overlay sitting on top of the close button (it has
+  // a z-index) with no way to click through it -- forcing a page reload.
+  $("#crop-overlay").classList.add("hidden");
+  $("#crop-actions").classList.add("hidden");
+  $("#trim-bar").classList.add("hidden");
+  var modalContentElClose = document.querySelector("#viewer-modal .modal-content");
+  if (modalContentElClose) modalContentElClose.classList.remove("details-open");
+  try { if (viewerState.mediaUrl) URL.revokeObjectURL(viewerState.mediaUrl); } catch (e) {}
+  try { if (viewerState.previewUrl) URL.revokeObjectURL(viewerState.previewUrl); } catch (e) {}
+  try { exitCropMode(); } catch (e) {}
+  try { exitTrimMode(); } catch (e) {}
   hideModal("#viewer-modal");
   viewerState = { id: null, fileKey: null, metaJson: null, mediaUrl: null };
 }
