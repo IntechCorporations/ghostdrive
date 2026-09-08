@@ -2891,7 +2891,25 @@ function newUploadId() { return crypto.randomUUID ? crypto.randomUUID() : String
    First use in a session downloads ffmpeg's ~25-30MB core (cached by the
    browser after that), so the first transcode of a session has extra
    startup time beyond the encode itself. */
-var TRANSCODE_MAX_BYTES = 400 * 1024 * 1024; // ~400MB practical ceiling for in-browser, single-threaded re-encoding
+// Set to 3GB at explicit request, past the ~2GB point flagged as the
+// practical ceiling. Restating the actual constraint plainly since this
+// goes beyond it: ffmpeg.wasm's single-threaded core (no COOP/COEP headers
+// on GitHub Pages, so the multi-threaded core isn't an option) has a hard
+// ~4GB total WebAssembly linear-memory ceiling shared between the input
+// file, the output file being built, AND ffmpeg's own decode/encode
+// working memory all at once. At 3GB of input, well under 1GB is left for
+// everything else, which for many real videos (output size comparable to
+// input, plus filter/working buffers) isn't enough -- expect this to fail
+// with an out-of-memory error on a real, not-rare, share of files in this
+// range, especially on mobile Safari or lower-end hardware, rather than
+// just being slow. It always falls back to the original (untranscoded)
+// file rather than blocking the upload when that happens (see
+// transcodeVideoForCompat), so a failure here doesn't break the upload --
+// it just means that file didn't get the compatibility fix.
+// This still does NOT cover this library's largest files (multi-GB, up to
+// 8GB) -- that gap is a hard wall, not a number to tune, and the only way
+// past it is server-side transcoding (a separate, bigger piece of work).
+var TRANSCODE_MAX_BYTES = 3 * 1024 * 1024 * 1024; // ~3GB -- past the recommended ceiling, set anyway on request
 var FFMPEG_JS_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.js";
 var FFMPEG_CORE_JS_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.js";
 var FFMPEG_CORE_WASM_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.wasm";
