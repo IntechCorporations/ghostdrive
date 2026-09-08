@@ -275,7 +275,7 @@
   .list-view .thumb .info-row {
     display: flex; gap: 14px; color: var(--text-dim); font-size: 12px; font-family: var(--mono); flex: none;
   }
-  .list-compact .thumb img, .list-compact .thumb video, .list-compact .thumb.placeholder { display: none; }
+  .list-compact .thumb img, .list-compact .thumb video, .list-compact .thumb.placeholder { display: none !important; }
 
   .empty-state {
     text-align: center; color: var(--text-dim); padding: 90px 20px; font-size: 15px;
@@ -312,21 +312,32 @@
   .viewer-meta { display: flex; flex-direction: column; gap: 11px; }
   .viewer-actions { display: flex; gap: 10px; }
 
-  /* Video viewer, sized and framed like macOS Quick Look: large, centered,
-     floating over a dark backdrop rather than boxed into the same small
-     frame as a photo + its metadata form. No filename/date/folder fields
-     either -- just the video, the way Preview shows a file: one big
-     screen, nothing else competing for attention. */
-  .modal-content.video-mode { max-width: min(94vw, 1280px); background: #0b0b0d; padding: 0; }
-  .modal-content.video-mode #viewer-media video {
+  /* Immersive media viewer, framed like macOS Quick Look: large, centered,
+     floating over a dark backdrop rather than boxed into a small frame
+     alongside a metadata form. Used for both photos and videos -- just the
+     media, one big screen, nothing else competing for attention. The
+     filename/date/folder fields are still there, one click away behind the
+     gear button. */
+  .modal-content.media-mode { max-width: min(94vw, 1280px); background: #0b0b0d; padding: 0; }
+  .modal-content.media-mode #viewer-media video {
     max-width: min(90vw, 1180px); max-height: 78vh; width: auto; height: auto;
     border-radius: 10px; background: #000; box-shadow: 0 30px 90px rgba(0,0,0,0.55);
   }
-  .modal-content.video-mode #viewer-media img.viewer-poster {
-    max-width: min(90vw, 1180px); max-height: 78vh; border-radius: 10px;
+  .modal-content.media-mode #viewer-media img {
+    max-width: min(90vw, 1180px); max-height: 78vh; width: auto; height: auto;
+    border-radius: 10px; box-shadow: 0 30px 90px rgba(0,0,0,0.55);
   }
-  .modal-content.video-mode .viewer-meta { display: none; }
-  .modal-content.video-mode #viewer-media { margin: 0; }
+  /* Click-to-zoom: the image scales up past its container and the container
+     becomes scrollable, so you can drag around a zoomed photo the way any
+     photo viewer works. */
+  #viewer-media.zoomed { overflow: auto; max-height: 88vh; cursor: zoom-out; align-items: flex-start; }
+  #viewer-media.zoom-ready img { cursor: zoom-in; }
+  .modal-content.media-mode #viewer-media.zoomed img {
+    max-width: none; max-height: none; border-radius: 0;
+    transform: scale(2.5); transform-origin: top left;
+  }
+  .modal-content.media-mode .viewer-meta { display: none; }
+  .modal-content.media-mode #viewer-media { margin: 0; }
   .viewer-video-delete {
     display: none; position: absolute; top: 12px; right: 56px; z-index: 3;
     background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
@@ -334,8 +345,8 @@
   }
   .viewer-video-delete:hover { background: var(--danger); }
   .viewer-video-delete svg { width: 17px; height: 17px; }
-  .modal-content.video-mode .viewer-video-delete { display: flex; }
-  .modal-content.video-mode .modal-close { color: #f5f1e6; background: rgba(20,18,12,0.55); border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; top: 12px; right: 14px; }
+  .modal-content.media-mode .viewer-video-delete { display: flex; }
+  .modal-content.media-mode .modal-close { color: #f5f1e6; background: rgba(20,18,12,0.55); border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; top: 12px; right: 14px; }
   .viewer-video-trim {
     display: none; position: absolute; top: 12px; right: 98px; z-index: 3;
     background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
@@ -343,7 +354,15 @@
   }
   .viewer-video-trim:hover { background: var(--brass); color: #1c1406; }
   .viewer-video-trim svg { width: 17px; height: 17px; }
-  .modal-content.video-mode .viewer-video-trim { display: flex; }
+  .modal-content.media-mode .viewer-video-trim { display: flex; }
+  .viewer-photo-crop {
+    position: absolute; top: 12px; right: 98px; z-index: 3;
+    background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .viewer-photo-crop:hover { background: var(--brass); color: #1c1406; }
+  .viewer-photo-crop svg { width: 17px; height: 17px; }
+  .viewer-photo-crop.hidden { display: none; }
   .viewer-video-details {
     display: none; position: absolute; top: 12px; right: 140px; z-index: 3;
     background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
@@ -351,19 +370,31 @@
   }
   .viewer-video-details:hover, .viewer-video-details.active { background: var(--brass); color: #1c1406; }
   .viewer-video-details svg { width: 17px; height: 17px; }
-  .modal-content.video-mode .viewer-video-details { display: flex; }
+  .modal-content.media-mode .viewer-video-details { display: flex; }
+  /* "Fast copy" / "Full quality" toggle, or "Speed up" for a video that
+     doesn't have a fast copy yet -- see the "Fast video preview" JS section. */
+  .viewer-video-quality {
+    display: none; position: absolute; top: 12px; right: 182px; z-index: 3;
+    background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; height: 34px; padding: 0 14px;
+    border-radius: 17px; align-items: center; justify-content: center; cursor: pointer;
+    font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
+  .viewer-video-quality:hover { background: var(--brass); color: #1c1406; }
+  .viewer-video-quality:disabled { opacity: 0.6; cursor: default; }
+  .viewer-video-quality.hidden { display: none !important; }
+  .modal-content.media-mode .viewer-video-quality { display: flex; }
   /* The details panel stays fully hidden in video mode until the gear
      button above is clicked -- "one big screen" by default, same as
      macOS Preview, with the filename/date/folder fields just a click
      away instead of gone entirely. */
-  .modal-content.video-mode .viewer-meta {
+  .modal-content.media-mode .viewer-meta {
     display: none; position: absolute; right: 14px; bottom: 14px; z-index: 5;
     background: rgba(20,18,12,0.92); border-radius: 10px; padding: 16px; width: 260px;
   }
-  .modal-content.video-mode.details-open .viewer-meta { display: flex; }
-  .modal-content.video-mode .viewer-meta input,
-  .modal-content.video-mode .viewer-meta label { color: #f5f1e6; }
-  .modal-content.video-mode .viewer-meta .hint { color: rgba(245,241,230,0.65); }
+  .modal-content.media-mode.details-open .viewer-meta { display: flex; }
+  .modal-content.media-mode .viewer-meta input,
+  .modal-content.media-mode .viewer-meta label { color: #f5f1e6; }
+  .modal-content.media-mode .viewer-meta .hint { color: rgba(245,241,230,0.65); }
 
   /* ---------------- Photo crop ---------------- */
   .crop-overlay { position: absolute; inset: 0; z-index: 4; }
@@ -695,9 +726,13 @@
       <button class="viewer-video-trim" id="btn-viewer-trim" title="Trim" aria-label="Trim">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"/></svg>
       </button>
+      <button class="viewer-photo-crop hidden" id="btn-viewer-crop-icon" title="Crop" aria-label="Crop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+      </button>
       <button class="viewer-video-details" id="btn-viewer-details" title="Details" aria-label="Details">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
+      <button class="viewer-video-quality hidden" id="btn-viewer-quality" title="Playback quality" aria-label="Playback quality"></button>
       <div id="trim-bar" class="trim-bar hidden">
         <div class="trim-bar-track">
           <div id="trim-range-fill" class="trim-range-fill"></div>
@@ -1400,6 +1435,11 @@ function enterVault() {
   // browser that crashed) mid-transfer -- see the "Durable upload queue"
   // section below.
   resumePendingUploads();
+  // Stage the video feed in the background so it opens instantly when
+  // clicked (it's the app's main feature). Deliberately delayed a moment
+  // so it doesn't compete with the gallery's own thumbnails for bandwidth
+  // on first paint -- the gallery is what's actually on screen right now.
+  setTimeout(function () { prewarmReels().catch(function () {}); }, 1500);
 }
 
 /* ---------------- Vault crypto material: created on first login, reused after ----------------
@@ -2777,6 +2817,7 @@ function uploadQueueEntry(entry, onProgress, signal) {
     })
     .then(function (res) {
       if (res.error) throw res.error;
+      if (entry.dbPayload.kind === "video") scheduleVideoPreview(entry); // fire-and-forget; see "Fast video preview" section
       // Always attempt this, regardless of stage: a plain drag-and-drop
       // large upload was never durably queued in the first place, so this
       // is a harmless no-op for it. A large upload that came from the
@@ -2984,6 +3025,163 @@ function replaceObjectContent(record, fileKey, metaJson, newContentBlob, newThum
   });
 }
 
+/* ---------------- Fast video preview (client-side transcode) ----------------
+   Long/high-bitrate videos take a while to start playing, and can stall
+   mid-playback, even with range-request streaming -- the browser is still
+   pulling through the *original* bitrate. There's no server here that can
+   run real ffmpeg (this is a static site), so instead a much smaller
+   "fast" copy gets transcoded right in the browser -- via ffmpeg.wasm,
+   loaded on demand only when a video actually needs one -- and stored
+   alongside the original at `<content_path>-preview`. The viewer plays
+   that copy by default and offers a button to fall back to the original.
+   Every step is defensive: if the library fails to load, the transcode
+   errors, takes too long, or the source is too big to safely hold in
+   browser memory, the whole thing is skipped and playback just uses the
+   original -- exactly like before this existed. */
+var PREVIEW_MIN_SIZE = 15 * 1024 * 1024;        // not worth it for short/small clips
+var PREVIEW_MAX_INPUT_SIZE = 700 * 1024 * 1024; // ffmpeg.wasm can't safely hold much more than this in memory
+var PREVIEW_TIMEOUT_MS = 6 * 60 * 1000;         // give up rather than hang an upload or a backfill click
+var ffmpegSingleton = null;
+function loadScriptOnce(src) {
+  return new Promise(function (resolve, reject) {
+    var existing = document.querySelector('script[src="' + src + '"]');
+    if (existing) {
+      if (existing.dataset.loaded) { resolve(); return; }
+      existing.addEventListener("load", resolve);
+      existing.addEventListener("error", function () { reject(new Error("failed to load " + src)); });
+      return;
+    }
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = function () { s.dataset.loaded = "1"; resolve(); };
+    s.onerror = function () { reject(new Error("failed to load " + src)); };
+    document.head.appendChild(s);
+  });
+}
+function getFFmpeg() {
+  if (ffmpegSingleton) return ffmpegSingleton;
+  ffmpegSingleton = (window.FFmpeg ? Promise.resolve() : loadScriptOnce("https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"))
+    .then(function () {
+      var ffmpeg = window.FFmpeg.createFFmpeg({
+        log: false,
+        corePath: "https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js",
+      });
+      return ffmpeg.load().then(function () { return ffmpeg; });
+    })
+    .catch(function (err) { ffmpegSingleton = null; throw err; }); // don't cache a failure -- let the next attempt retry
+  return ffmpegSingleton;
+}
+// Transcodes a video Blob/File down to a small, fast-loading copy: capped
+// at 720px tall, modest bitrate, faststart mp4 (so playback can begin
+// before the whole file downloads). Resolves to null -- never rejects --
+// when a preview isn't worth making or couldn't be made; callers treat
+// null as "use the original."
+function generateVideoPreview(sourceBlob, ext) {
+  if (!sourceBlob || sourceBlob.size < PREVIEW_MIN_SIZE) return Promise.resolve(null);
+  if (sourceBlob.size > PREVIEW_MAX_INPUT_SIZE) {
+    console.warn("[ghostdrive] skipping fast preview -- too large to transcode in-browser:", (sourceBlob.size / 1048576).toFixed(0) + "MB");
+    return Promise.resolve(null);
+  }
+  return getFFmpeg().then(function (ffmpeg) {
+    var inName = "in." + (ext || "mp4");
+    var outName = "out.mp4";
+    var timer;
+    var timeoutPromise = new Promise(function (_, reject) {
+      timer = setTimeout(function () {
+        try { ffmpeg.exit(); } catch (e) {}
+        ffmpegSingleton = null; // the worker just got killed -- next call needs a fresh one
+        reject(new Error("preview transcode timed out"));
+      }, PREVIEW_TIMEOUT_MS);
+    });
+    var work = sourceBlob.arrayBuffer().then(function (buf) {
+      ffmpeg.FS("writeFile", inName, new Uint8Array(buf));
+      return ffmpeg.run(
+        "-i", inName,
+        "-vf", "scale=-2:'min(720,ih)'",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+        "-c:a", "aac", "-b:a", "96k",
+        "-movflags", "+faststart",
+        outName
+      );
+    }).then(function () {
+      var data = ffmpeg.FS("readFile", outName);
+      try { ffmpeg.FS("unlink", inName); ffmpeg.FS("unlink", outName); } catch (e) {}
+      return new Blob([data.buffer], { type: "video/mp4" });
+    });
+    return Promise.race([work, timeoutPromise]).then(function (blob) {
+      clearTimeout(timer);
+      if (!blob || blob.size >= sourceBlob.size) return null; // not actually smaller -- not worth it
+      return blob;
+    });
+  }).catch(function (err) {
+    console.warn("[ghostdrive] fast video preview skipped:", (err && err.message) || err);
+    return null;
+  });
+}
+// Re-encrypts just the metadata (not the content) with a patch applied --
+// used to record a newly-generated preview's path without touching the
+// object's actual content_path/thumbnail_path. Same shape as
+// replaceObjectContent's DB update, minus the content/thumbnail re-upload.
+function patchObjectMetadata(record, fileKey, metaJson, metaPatch) {
+  var patched = Object.assign({}, metaJson, metaPatch);
+  var encryptedMetadata = toB64(encryptBytes(fileKey, new TextEncoder().encode(JSON.stringify(patched))));
+  return sb.from("objects").update({ encrypted_metadata: encryptedMetadata }).eq("id", record.id).then(function (res) {
+    if (res.error) throw res.error;
+    thumbUrlCache.delete(record.id);
+    galleryPreviewCache.delete(record.id);
+    return patched;
+  });
+}
+// Fire-and-forget: called right after a fresh video upload finishes. Never
+// throws into the upload queue -- a failure here just means that video
+// keeps working exactly as it does today (full-res only).
+function scheduleVideoPreview(entry) {
+  var sourceBlob = entry.stage === "prepared-large" ? entry.file : entry.contentBlob;
+  var ext = fileExt(entry.fileName || "");
+  generateVideoPreview(sourceBlob, ext).then(function (previewBlob) {
+    if (!previewBlob) return;
+    var fileKey = unwrapFileKey(entry.dbPayload.wrapped_file_key);
+    var previewPath = entry.dbPayload.content_path + "-preview";
+    return r2UploadFileRaw(previewPath, new File([previewBlob], "preview.mp4")).then(function () {
+      var metaJson = JSON.parse(decryptText(fileKey, fromB64(entry.dbPayload.encrypted_metadata)));
+      return patchObjectMetadata({ id: entry.dbPayload.id }, fileKey, metaJson, { hasPreview: true, previewPath: previewPath });
+    });
+  }).catch(function (err) {
+    console.warn("[ghostdrive] fast preview generation skipped for this upload:", err);
+  });
+}
+// Backfill path: for a video already in the library that has no fast
+// preview yet. Downloads/decrypts the original (same helper used for
+// trim/download elsewhere, so it works whether or not that original is
+// encrypted), transcodes it, uploads the result, and patches the object's
+// metadata -- same end state as a freshly-uploaded video.
+function backfillVideoPreview(record, fileKey, metaJson) {
+  var btn = $("#btn-viewer-quality");
+  var originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Downloading…";
+  return downloadObjectContent(record, fileKey, metaJson, function (loadedBytes, totalBytes) {
+    if (totalBytes) btn.textContent = "Downloading " + Math.round((loadedBytes / totalBytes) * 100) + "%";
+  }).then(function (blob) {
+    btn.textContent = "Compressing…";
+    return generateVideoPreview(blob, metaJson.ext);
+  }).then(function (previewBlob) {
+    if (!previewBlob) throw new Error("Couldn't make a smaller version of this video");
+    btn.textContent = "Uploading…";
+    var previewPath = record.content_path + "-preview";
+    return r2UploadFileRaw(previewPath, new File([previewBlob], "preview.mp4")).then(function () {
+      return patchObjectMetadata(record, fileKey, metaJson, { hasPreview: true, previewPath: previewPath });
+    });
+  }).then(function () {
+    if (viewerState.id === record.id) openViewer(record.id); // reload so it now plays the fast copy
+  }).catch(function (err) {
+    console.warn("[ghostdrive] speed-up failed:", err);
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+    alert("Couldn't create a faster copy: " + friendlyError(err));
+  });
+}
+
 function dayKey(isoDate) {
   if (!isoDate) return null;
   var d = new Date(isoDate);
@@ -3045,8 +3243,10 @@ function applyViewMode() {
         // (see wireVideoHoverPreview), and an inline style beats any CSS
         // rule -- including list-compact's "hide every thumbnail" rule.
         // Clearing it here lets that CSS rule actually take effect again.
-        var media = tile.querySelector("img, video");
-        if (media) media.style.display = "";
+        // querySelectorAll, not querySelector: a hovered video tile holds
+        // *both* an <img> and a <video>, and clearing only the first left
+        // the other one still inline-styled and therefore still visible.
+        tile.querySelectorAll("img, video").forEach(function (media) { media.style.display = ""; });
       });
     }
   });
@@ -3149,6 +3349,13 @@ $("#drop-zone").insertBefore(galleryRoot, $("#gallery"));
 $("#gallery").remove();
 
 function refreshGallery() {
+  // The library just changed (upload, delete, edit), so whatever the reels
+  // prewarm staged is now potentially stale -- drop it. If the feed is
+  // currently closed, the next prewarm/open rebuilds it; if it's open, it
+  // keeps running off the state it already loaded and picks up the change
+  // on its next open, which is the right call rather than yanking the feed
+  // out from under someone mid-watch.
+  if (!isReelsOpen()) reelsPrewarmPromise = null;
   sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
     if (res.error) { console.error(res.error); return; }
     var records = res.data || [];
@@ -3815,11 +4022,39 @@ function playVideoProgressiveMSE(mediaHost, record, fileKey, metaJson, loadingBa
 }
 
 function openViewer(id) {
+  // Carries the "show me the original, not the fast copy" choice across a
+  // reload of the *same* item (the toggle button below calls openViewer
+  // again to re-render) -- moving to a different item always resets it.
+  var prevWantOriginal = (viewerState && viewerState.id === id) ? !!viewerState.wantOriginal : false;
   var record;
   sb.from("objects").select("*").eq("id", id).maybeSingle().then(function (res) {
     record = res.data;
     var loaded = loadObjectMeta(record);
-    viewerState = { id: id, fileKey: loaded.fileKey, metaJson: loaded.metaJson, mediaUrl: null };
+    viewerState = { id: id, fileKey: loaded.fileKey, metaJson: loaded.metaJson, mediaUrl: null, wantOriginal: prevWantOriginal };
+
+    // Fast-playback toggle/backfill button (video only) -- see the "Fast
+    // video preview" section above for what generates and consumes these.
+    var hasFastPreview = record.kind === "video" && !!(loaded.metaJson.hasPreview && loaded.metaJson.previewPath);
+    var playFast = hasFastPreview && !prevWantOriginal;
+    var qualityBtn = $("#btn-viewer-quality");
+    qualityBtn.classList.add("hidden");
+    qualityBtn.disabled = false;
+    qualityBtn.onclick = null;
+    if (record.kind === "video") {
+      if (hasFastPreview) {
+        qualityBtn.classList.remove("hidden");
+        qualityBtn.textContent = playFast ? "Full quality" : "Fast copy";
+        qualityBtn.onclick = function () {
+          if (viewerState.mediaUrl) URL.revokeObjectURL(viewerState.mediaUrl);
+          viewerState.wantOriginal = !viewerState.wantOriginal;
+          openViewer(id);
+        };
+      } else if ((loaded.metaJson.size || 0) >= PREVIEW_MIN_SIZE) {
+        qualityBtn.classList.remove("hidden");
+        qualityBtn.textContent = "Speed up";
+        qualityBtn.onclick = function () { backfillVideoPreview(record, loaded.fileKey, loaded.metaJson); };
+      }
+    }
 
     $("#viewer-filename").value = loaded.metaJson.name || "";
     $("#viewer-date").value = toDatetimeLocalValue(loaded.metaJson.date);
@@ -3833,6 +4068,7 @@ function openViewer(id) {
 
     var mediaHost = $("#viewer-media");
     mediaHost.innerHTML = "";
+    mediaHost.classList.remove("zoomed", "zoom-ready"); // don't carry zoom state over to the next item
     // The thumbnail is already sitting in cache (it's what rendered the
     // gallery tile) or loads near-instantly either way -- showing it
     // immediately instead of a blank "Decrypting…" placeholder means
@@ -3862,7 +4098,9 @@ function openViewer(id) {
     // Applied immediately (not only once the video's actually ready) so
     // the clean, big Quick-Look-style frame -- and the poster/progress bar
     // above -- show right away instead of popping in after a delay.
-    if (modalContentElInit) modalContentElInit.classList.toggle("video-mode", record.kind === "video");
+    // Photos get the same immersive treatment as videos now -- one big
+    // image, no metadata form, details behind the gear button.
+    if (modalContentElInit) modalContentElInit.classList.toggle("media-mode", record.kind === "video" || record.kind === "photo");
     showModal("#viewer-modal");
     updateViewerNavButtons();
 
@@ -3881,9 +4119,10 @@ function openViewer(id) {
     // downloaded first. Encrypted content can't do this (the bytes are
     // meaningless without decrypting them in JS first), which is exactly
     // why it wasn't possible before.
-    if (record.kind === "video" && viewerState.metaJson.contentEncrypted === false) {
+    if (record.kind === "video" && (viewerState.metaJson.contentEncrypted === false || playFast)) {
       mediaHost.innerHTML = "";
-      var streamUrl = R2_WORKER_URL + "/object?path=" + encodeURIComponent(record.content_path)
+      var streamPath = playFast ? loaded.metaJson.previewPath : record.content_path;
+      var streamUrl = R2_WORKER_URL + "/object?path=" + encodeURIComponent(streamPath)
         + "&auth=" + encodeURIComponent(R2_AUTH_SECRET);
       var streamVideo = document.createElement("video");
       streamVideo.src = streamUrl;
@@ -3902,7 +4141,7 @@ function openViewer(id) {
       viewerState.videoEl = streamVideo;
       $("#btn-viewer-trim").classList.toggle("hidden", typeof streamVideo.captureStream !== "function");
       var modalContentElStream = document.querySelector("#viewer-modal .modal-content");
-      if (modalContentElStream) modalContentElStream.classList.add("video-mode");
+      if (modalContentElStream) modalContentElStream.classList.add("media-mode");
       return "progressive"; // reuses the existing "already handled, skip the blob path" marker
     }
 
@@ -3946,7 +4185,7 @@ function openViewer(id) {
     var isVideo = (viewerState.metaJson.mime || "").indexOf("video/") === 0 || VIDEO_EXTENSIONS.indexOf(ext) !== -1;
     var isRaw = !isVideo && RAW_EXTENSIONS.indexOf(ext) !== -1;
     var modalContentEl = document.querySelector("#viewer-modal .modal-content");
-    if (modalContentEl) modalContentEl.classList.toggle("video-mode", isVideo);
+    if (modalContentEl) modalContentEl.classList.toggle("media-mode", isVideo || !isRaw);
 
     if (isVideo) {
       var video = document.createElement("video");
@@ -3988,6 +4227,28 @@ function openViewer(id) {
       imgEl.remove();
       renderRawFallback(mediaHost, blob, url, ext);
     };
+    // Click to zoom in, click again to zoom out. The zoom itself is the
+    // CSS rules above (scale + a scrollable container); this just toggles
+    // them and then scrolls so the spot that was clicked ends up roughly
+    // under the cursor, instead of the container jumping to its top-left
+    // corner and leaving you somewhere unrelated in the photo.
+    mediaHost.classList.add("zoom-ready");
+    imgEl.addEventListener("click", function (e) {
+      if (cropState) return; // don't fight the crop overlay while it's up
+      var zoomingIn = !mediaHost.classList.contains("zoomed");
+      if (!zoomingIn) {
+        mediaHost.classList.remove("zoomed");
+        return;
+      }
+      var rect = imgEl.getBoundingClientRect();
+      var fracX = (e.clientX - rect.left) / rect.width;
+      var fracY = (e.clientY - rect.top) / rect.height;
+      mediaHost.classList.add("zoomed");
+      // Read positions only after the class is applied, so these reflect
+      // the zoomed-in dimensions rather than the pre-zoom ones.
+      mediaHost.scrollLeft = (imgEl.scrollWidth * fracX) - (mediaHost.clientWidth / 2);
+      mediaHost.scrollTop = (imgEl.scrollHeight * fracY) - (mediaHost.clientHeight / 2);
+    });
     mediaHost.appendChild(imgEl);
     viewerState.imgEl = imgEl;
     $("#btn-viewer-crop").classList.remove("hidden");
@@ -4370,7 +4631,7 @@ $("#btn-viewer-delete-video").addEventListener("click", function () {
 });
 // The gear icon in the clean video view -- toggles the same
 // filename/date/folder panel photos always show, since video mode hides
-// it by default (see the video-mode .viewer-meta CSS rule).
+// it by default (see the media-mode .viewer-meta CSS rule).
 $("#btn-viewer-details").addEventListener("click", function () {
   var modalContentEl = document.querySelector("#viewer-modal .modal-content");
   var open = modalContentEl.classList.toggle("details-open");
@@ -4438,6 +4699,26 @@ function loadReelVideo(id, onProgress) {
   var record = reelsState.records.get(id);
   if (!record) return Promise.reject(new Error("Video not found."));
   var loaded = loadObjectMeta(record); // also warms state.fileKeyCache
+
+  // Unencrypted video (everything uploaded since encryption was turned off)
+  // gets handed to the player as a plain URL, so the browser streams it
+  // natively -- playback starts on the first chunk and seeking is instant,
+  // instead of waiting for the entire file to download first. This matters
+  // most here: the feed is the main way videos get watched.
+  if (loaded.metaJson.contentEncrypted === false) {
+    var streamUrl = R2_WORKER_URL + "/object?path=" + encodeURIComponent(record.content_path)
+      + "&auth=" + encodeURIComponent(R2_AUTH_SECRET);
+    // Not put through reelsCacheSet: that cache owns blob URLs and revokes
+    // them on eviction, which would break a plain URL that was never a blob.
+    if (onProgress) onProgress(1, 1); // nothing to wait on -- clear the loading bar immediately
+    // The engagement doc (highlight markers, watch stats) normally gets
+    // seeded from the decoded bytes; with streaming there are no bytes in
+    // hand, so it's prepared without them and falls back to its own
+    // deterministic estimate until real viewing data accumulates.
+    reelsPrepareEngagement(id, record, loaded.fileKey, null);
+    return Promise.resolve(streamUrl);
+  }
+
   return downloadObjectContent(record, loaded.fileKey, loaded.metaJson, onProgress).then(function (blob) {
     var url = URL.createObjectURL(blob);
     reelsCacheSet(id, { url: url });
@@ -4448,9 +4729,21 @@ function loadReelVideo(id, onProgress) {
   });
 }
 
-function openReels() {
-  sb.from("objects").select("*").eq("user_id", state.userId).eq("kind", "video").then(function (res) {
-    if (res.error) { console.error(res.error); return; }
+/* ---------------- Reels prewarm ----------------
+   This is the app's main feature, so it shouldn't start from cold when the
+   button is clicked. Right after the vault opens, the video list is fetched
+   and ordered, and the first couple of videos start downloading in the
+   background -- so by the time the button is actually pressed, the feed
+   usually opens straight into playback with nothing to wait for.
+   Kept deliberately modest (see REELS_PREWARM_COUNT): the point is to have
+   the first video or two ready, not to pull the whole library down on every
+   page load. */
+var REELS_PREWARM_COUNT = 2;
+var reelsPrewarmPromise = null;
+
+function loadReelsIndex() {
+  return sb.from("objects").select("*").eq("user_id", state.userId).eq("kind", "video").then(function (res) {
+    if (res.error) throw res.error;
     var recordsById = new Map();
     var items = (res.data || []).map(function (record) {
       recordsById.set(record.id, record);
@@ -4466,14 +4759,43 @@ function openReels() {
     // switched off with the shuffle button, same toggle as before.
     reelsState.order = weightedShuffleByEngagement(order);
     reelsState.shuffled = true;
-    $("#btn-reels-shuffle").classList.add("active");
     reelsState.index = 0;
+    return order;
+  });
+}
 
+// Called in the background once the vault is open -- never blocks anything,
+// and quietly does nothing if it fails (a failed prewarm should never keep
+// the button from working; openReels just does the work itself instead).
+function prewarmReels() {
+  if (reelsPrewarmPromise) return reelsPrewarmPromise;
+  reelsPrewarmPromise = loadReelsIndex().then(function (order) {
+    order.slice(0, REELS_PREWARM_COUNT).forEach(function (id) {
+      loadReelVideo(id).catch(function () {}); // fills the same cache showReelAt() reads from
+    });
+    return order;
+  }).catch(function (err) {
+    console.warn("[ghostdrive] reels prewarm skipped:", err);
+    reelsPrewarmPromise = null; // let openReels retry from scratch
+    throw err;
+  });
+  return reelsPrewarmPromise;
+}
+
+function openReels() {
+  // If the prewarm already finished, this resolves instantly with the feed
+  // fully staged -- the common case, and why the feed opens straight into
+  // playback. Otherwise it does (or waits on) the same work now.
+  var ready = reelsPrewarmPromise || loadReelsIndex();
+  ready.then(function (order) {
+    $("#btn-reels-shuffle").classList.add("active");
     showModal("#reels-modal");
     $("#reels-empty").classList.toggle("hidden", order.length > 0);
     $("#reels-video").classList.toggle("hidden", order.length === 0);
     if (!order.length) { $("#reels-info").textContent = ""; return; }
     showReelAt(0);
+  }).catch(function (err) {
+    console.error("couldn't open video feed:", err);
   });
 }
 
@@ -4934,7 +5256,14 @@ function reelsPrepareEngagement(id, record, fileKey, plainBytes) {
   refreshReelsHighlightsIfCurrent(id);
 
   if (!doc.predicted) {
-    computePredictedHighlights(id, plainBytes, REELS_HL_BUCKETS).then(function (result) {
+    // plainBytes is null on the streaming path (nothing was downloaded into
+    // memory to analyze). The audio-energy guess needs actual bytes, so fall
+    // straight through to the deterministic per-id estimate; real seek data
+    // replaces it either way once there's enough of it.
+    var predicted = plainBytes
+      ? computePredictedHighlights(id, plainBytes, REELS_HL_BUCKETS)
+      : Promise.resolve(fallbackPredictedHighlights(id, REELS_HL_BUCKETS));
+    predicted.then(function (result) {
       var live = reelsState.engagement.get(id);
       if (!live) return; // Reels closed before this finished
       live.doc.predicted = result.buckets;
