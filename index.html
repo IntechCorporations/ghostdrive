@@ -678,6 +678,7 @@
           <span id="upload-status"></span>
           <span id="file-count"></span>
           <button type="button" id="btn-open-log" class="log-trigger">Upload log<span id="log-badge" class="log-badge hidden">0</span></button>
+          <button type="button" id="btn-open-errors" class="log-trigger">Errors<span id="error-badge" class="log-badge hidden">0</span></button>
         </div>
         <div class="toolbar-controls">
           <div class="type-control">
@@ -807,6 +808,19 @@
     <div id="log-list"></div>
     <div class="viewer-actions">
       <button type="button" id="btn-log-clear" class="secondary">Clear log</button>
+    </div>
+  </div>
+</div>
+
+<div id="error-modal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-content log-modal-content">
+    <button class="modal-close" id="btn-error-close">&times;</button>
+    <h3>Errors</h3>
+    <p class="hint" style="margin-top: -6px;">Problems caught automatically on this device, newest first — script errors, failed decrypts/downloads, and anything logged with console.error.</p>
+    <div id="error-list"></div>
+    <div class="viewer-actions">
+      <button type="button" id="btn-error-clear" class="secondary">Clear</button>
     </div>
   </div>
 </div>
@@ -3176,6 +3190,105 @@ $("#btn-log-clear").addEventListener("click", function () {
 });
 updateLogBadge();
 
+/* ---------------- Error detector ----------------
+   Catches what would otherwise only ever show up in a dev-tools console:
+   uncaught exceptions, unhandled promise rejections, and every existing
+   console.error(...) call already sprinkled through the app (thumbnail
+   failures, decrypt failures, etc). Persisted the same way the upload log
+   is, so it survives a reload and is visible without opening Web
+   Inspector -- click "Errors" in the toolbar. */
+var ERROR_LOG_KEY = "ghostdrive-error-log";
+var ERROR_LOG_MAX = 200;
+function loadErrorLog() {
+  try { return JSON.parse(localStorage.getItem(ERROR_LOG_KEY) || "[]"); } catch (e) { return []; }
+}
+var errorLog = loadErrorLog();
+function saveErrorLog() {
+  try { localStorage.setItem(ERROR_LOG_KEY, JSON.stringify(errorLog.slice(0, ERROR_LOG_MAX))); } catch (e) {}
+}
+function logError(source, message, detail) {
+  var entry = { source: source, message: String(message || "Unknown error"), detail: detail ? String(detail) : null, when: Date.now() };
+  // Collapse immediate repeats (e.g. a failing prefetch retried per-tile)
+  // into one line instead of flooding the list with duplicates.
+  var last = errorLog[0];
+  if (last && last.source === entry.source && last.message === entry.message && (entry.when - last.when) < 2000) {
+    last.when = entry.when;
+    last.count = (last.count || 1) + 1;
+  } else {
+    entry.count = 1;
+    errorLog.unshift(entry);
+  }
+  if (errorLog.length > ERROR_LOG_MAX) errorLog.length = ERROR_LOG_MAX;
+  saveErrorLog();
+  renderErrorLog();
+  updateErrorBadge();
+}
+function updateErrorBadge() {
+  var badge = $("#error-badge");
+  if (!badge) return;
+  badge.textContent = String(errorLog.length);
+  badge.classList.toggle("hidden", errorLog.length === 0);
+}
+function renderErrorLog() {
+  var host = $("#error-list");
+  if (!host) return;
+  if (!errorLog.length) {
+    host.innerHTML = '<p class="log-empty">No errors caught on this device yet.</p>';
+    return;
+  }
+  host.innerHTML = "";
+  errorLog.forEach(function (entry) {
+    var row = document.createElement("div");
+    row.className = "log-row log-fail";
+    var when = new Date(entry.when);
+    var whenStr = isNaN(when.getTime()) ? "" : when.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    row.innerHTML =
+      '<span class="log-status">' + (entry.source || "ERROR") + '</span>' +
+      '<span class="log-body"><span class="log-name"></span><div class="log-reason"></div></span>' +
+      '<span class="log-when"></span>';
+    row.querySelector(".log-name").textContent = entry.message + (entry.count > 1 ? " (x" + entry.count + ")" : "");
+    row.querySelector(".log-reason").textContent = entry.detail || "";
+    row.querySelector(".log-when").textContent = whenStr;
+    host.appendChild(row);
+  });
+}
+window.addEventListener("error", function (e) {
+  logError("SCRIPT", e.message || "Script error", (e.filename || "") + (e.lineno ? ":" + e.lineno : ""));
+});
+window.addEventListener("unhandledrejection", function (e) {
+  var reason = e.reason;
+  var msg = (reason && reason.message) ? reason.message : String(reason);
+  logError("PROMISE", msg, reason && reason.stack ? String(reason.stack).slice(0, 300) : null);
+});
+// Every existing console.error(...) call in the app already marks a real
+// failure (thumbnail decrypt, download, Supabase errors, etc) -- piping
+// those into the same visible log means nothing new has to be added at
+// each call site to get coverage everywhere at once.
+(function () {
+  var origConsoleError = console.error.bind(console);
+  console.error = function () {
+    origConsoleError.apply(console, arguments);
+    try {
+      var parts = Array.prototype.slice.call(arguments).map(function (a) {
+        if (a instanceof Error) return a.message;
+        if (typeof a === "object") { try { return JSON.stringify(a); } catch (e) { return String(a); } }
+        return String(a);
+      });
+      logError("CONSOLE", parts[0], parts.slice(1).join(" "));
+    } catch (e) {}
+  };
+})();
+$("#btn-open-errors").addEventListener("click", function () { renderErrorLog(); showModal("#error-modal"); });
+$("#btn-error-close").addEventListener("click", function () { hideModal("#error-modal"); });
+$("#error-modal .modal-backdrop").addEventListener("click", function () { hideModal("#error-modal"); });
+$("#btn-error-clear").addEventListener("click", function () {
+  errorLog = [];
+  saveErrorLog();
+  renderErrorLog();
+  updateErrorBadge();
+});
+updateErrorBadge();
+
 /* ---------------- Gallery ---------------- */
 function unwrapFileKey(wrappedFileKeyB64) { return decryptBytes(state.masterKey, fromB64(wrappedFileKeyB64)); }
 
@@ -3837,6 +3950,16 @@ function galleryPrefetchPump() {
   }
 }
 function queueGalleryPrefetch(record, metaJson) {
+  // This prefetch only exists to make grid-view hover-to-play feel instant
+  // (see wireVideoHoverPreview, which itself bails out immediately unless
+  // currentViewMode === "grid"). List/list-compact view never plays a
+  // hover preview at all, so queuing full-content downloads there was
+  // pure waste -- and worse, those large downloads were competing for the
+  // same handful of connections (Safari especially) as the actual
+  // thumbnail decrypts and any video you clicked to open, which is why
+  // videos and thumbnails could stall or fail to load while just
+  // scrolling a list of them.
+  if (currentViewMode !== "grid") return;
   if (galleryPreviewCache.has(record.id)) return;
   if ((metaJson.size || 0) > GALLERY_PREVIEW_MAX_PREFETCH_BYTES) return; // hover-only for big files, see note above
   galleryPrefetchQueue.push(record);
