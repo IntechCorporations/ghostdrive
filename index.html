@@ -2081,6 +2081,12 @@ function updateUploadTrayRow(row, loaded, total) {
   row.querySelector(".upload-row-fill").style.width = pct + "%";
   row.querySelector(".upload-row-pct").textContent = pct + "%";
 }
+function trayRowStatus(id, text) {
+  var row = uploadRowsById.get(id);
+  if (!row) return;
+  var pctEl = row.querySelector(".upload-row-pct");
+  if (pctEl) pctEl.textContent = text || "Waiting…";
+}
 function completeUploadTrayRow(row, errorMsg, cancelled) {
   var cancelBtn = row.querySelector(".upload-row-cancel");
   if (cancelBtn) cancelBtn.remove(); // nothing left to cancel once it's settled
@@ -2862,6 +2868,114 @@ function registerBackgroundSync() {
 
 function newUploadId() { return crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2); }
 
+/* ---------------- Client-side video transcode (Safari-compat backstop) ----------------
+   Ghostdrive does zero server-side processing -- uploaded bytes are stored
+   and streamed back exactly as-is (see prepareUpload's note on
+   contentEncrypted below). That means a source file in a codec/container a
+   viewer's browser can't decode (VP9/AV1 in particular, common from
+   third-party video downloads) will always fail to play, in every browser,
+   forever -- there's no bug in Ghostdrive's playback path to fix for that
+   case, because nothing downstream ever touches the bytes.
+   This re-encodes such a file to widely-supported H.264 video / AAC audio
+   in an MP4 container *before* upload, entirely in the browser tab via
+   ffmpeg.wasm -- no server, no added hosting cost. Deliberately capped to
+   files under TRANSCODE_MAX_BYTES: it runs single-threaded here (GitHub
+   Pages doesn't send the COOP/COEP headers the multi-threaded core needs),
+   and re-encoding is real CPU work with no hardware acceleration -- past a
+   few hundred MB it gets impractically slow and risks exhausting the tab's
+   memory instead of helping. Above the cap, or if anything about this
+   fails, the original file uploads untouched, same as before this existed
+   -- this can only ever help compatibility, never break an upload that
+   would otherwise have worked. It only affects new uploads going forward;
+   it doesn't touch anything already sitting in the library.
+   First use in a session downloads ffmpeg's ~25-30MB core (cached by the
+   browser after that), so the first transcode of a session has extra
+   startup time beyond the encode itself. */
+var TRANSCODE_MAX_BYTES = 400 * 1024 * 1024; // ~400MB practical ceiling for in-browser, single-threaded re-encoding
+var FFMPEG_JS_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.js";
+var FFMPEG_CORE_JS_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.js";
+var FFMPEG_CORE_WASM_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.wasm";
+var ffmpegLoadPromise = null;
+
+function loadScriptTag(src) {
+  return new Promise(function (resolve, reject) {
+    var s = document.createElement("script");
+    s.src = src;
+    s.onload = function () { resolve(); };
+    s.onerror = function () { reject(new Error("Failed to load " + src)); };
+    document.head.appendChild(s);
+  });
+}
+// ffmpeg.wasm's internal worker needs its core JS/WASM as same-origin
+// (a blob: URL satisfies that) rather than fetched straight from the CDN
+// -- this pulls each down once and hands back a local blob: URL for it.
+function ffmpegBlobUrl(url, mimeType) {
+  return fetch(url).then(function (r) { return r.arrayBuffer(); })
+    .then(function (buf) { return URL.createObjectURL(new Blob([buf], { type: mimeType })); });
+}
+function loadFFmpeg() {
+  if (ffmpegLoadPromise) return ffmpegLoadPromise;
+  ffmpegLoadPromise = (window.FFmpegWASM ? Promise.resolve() : loadScriptTag(FFMPEG_JS_URL))
+    .then(function () {
+      var ffmpeg = new window.FFmpegWASM.FFmpeg();
+      return Promise.all([
+        ffmpegBlobUrl(FFMPEG_CORE_JS_URL, "text/javascript"),
+        ffmpegBlobUrl(FFMPEG_CORE_WASM_URL, "application/wasm"),
+      ]).then(function (urls) {
+        return ffmpeg.load({ coreURL: urls[0], wasmURL: urls[1] }).then(function () { return ffmpeg; });
+      });
+    });
+  // A failed load shouldn't be cached forever -- the next video upload
+  // should get to try again (a transient CDN hiccup shouldn't permanently
+  // disable this for the rest of the session).
+  ffmpegLoadPromise.catch(function () { ffmpegLoadPromise = null; });
+  return ffmpegLoadPromise;
+}
+
+// Re-encodes `file` to H.264/AAC MP4 for guaranteed playback everywhere.
+// Resolves to a new File on success; resolves to the *original* file
+// (never rejects) if it's over the size cap or anything goes wrong -- see
+// the section note above for why that's the right failure mode here.
+function transcodeVideoForCompat(file, onProgress) {
+  if (!window.WebAssembly || file.size > TRANSCODE_MAX_BYTES) return Promise.resolve(file);
+  var ext = fileExt(file.name);
+  var inputName = "in" + (ext ? "." + ext : ".mp4");
+  return loadFFmpeg().then(function (ffmpeg) {
+    var progressHandler = function (info) {
+      if (onProgress && info && isFinite(info.progress)) onProgress(Math.max(0, Math.min(1, info.progress)));
+    };
+    try { ffmpeg.on("progress", progressHandler); } catch (e) {}
+    return file.arrayBuffer()
+      .then(function (buf) { return ffmpeg.writeFile(inputName, new Uint8Array(buf)); })
+      .then(function () {
+        return ffmpeg.exec([
+          "-i", inputName,
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+          "-c:a", "aac", "-b:a", "128k",
+          "-movflags", "+faststart",
+          "out.mp4",
+        ]);
+      })
+      .then(function () { return ffmpeg.readFile("out.mp4"); })
+      .then(function (data) {
+        try { ffmpeg.off("progress", progressHandler); } catch (e) {}
+        try { ffmpeg.deleteFile(inputName); } catch (e) {}
+        try { ffmpeg.deleteFile("out.mp4"); } catch (e) {}
+        var newName = file.name.replace(/\.[^.]+$/, "") + ".mp4";
+        console.log("[ghostdrive] transcoded", file.name, "->", newName, "for playback compatibility");
+        return new File([data], newName, { type: "video/mp4", lastModified: file.lastModified });
+      })
+      .catch(function (err) {
+        try { ffmpeg.off("progress", progressHandler); } catch (e) {}
+        console.error("[ghostdrive] video transcode failed, uploading original file instead:", err);
+        return file;
+      });
+  }).catch(function (err) {
+    console.error("[ghostdrive] ffmpeg failed to load, uploading original file instead:", err);
+    return file;
+  });
+}
+
 // Encrypts everything up front and returns a self-contained queue entry --
 // no further access to the master key or the original File is needed to
 // finish this upload from here on. Pass `id` when the tray row for this
@@ -2870,29 +2984,43 @@ function newUploadId() { return crypto.randomUUID ? crypto.randomUUID() : String
 // originally picked, which for a resumed upload may not be the one open now).
 function prepareUpload(file, id, folder) {
   var kind = classifyFile(file);
-  var fileKey = randomKey();
   id = id || newUploadId();
   if (folder === undefined || folder === null) folder = currentFolder;
-  var contentPath = state.userId + "/" + id + "/content";
-  // File *content* is no longer encrypted at all -- an explicit, confirmed
-  // choice. The bytes sit in R2 exactly as uploaded, readable by anything
-  // with bucket access. What this buys: video plays natively in seconds
-  // (the browser streams it straight from a URL instead of JS having to
-  // download and decrypt the whole file first), and there's no crypto cost
-  // on upload or download.
-  // Metadata (name, date, folder, dimensions) is still encrypted, as is
-  // the thumbnail -- those are small and cost nothing to protect.
-  // isLarge no longer decides encryption; it only picks which upload path
-  // is memory-safe. A big file streams from disk chunk-by-chunk into R2's
-  // multipart upload rather than being read into one in-memory Blob, which
-  // is what used to crash the tab on multi-GB video.
-  var isLarge = file.size > CHUNK_PLAIN_SIZE;
 
-  var contentReady = isLarge
-    ? Promise.resolve(null)
-    : file.arrayBuffer().then(function (buf) { return new Blob([new Uint8Array(buf)]); });
+  // Re-encode to a widely-playable format *before* anything else touches
+  // this file -- thumbnailing, encryption, upload -- so every downstream
+  // step (including the thumbnail, which itself decodes the video in a
+  // <video> element) works off content the viewer's browser can actually
+  // decode. See transcodeVideoForCompat's own comment for the size cap and
+  // why a failure here falls back to the original file instead of erroring.
+  var fileReady = kind === "video"
+    ? transcodeVideoForCompat(file, function (frac) { trayRowStatus(id, "Optimizing " + Math.round(frac * 100) + "%…"); })
+        .then(function (outFile) { trayRowStatus(id, "Waiting…"); return outFile; })
+    : Promise.resolve(file);
 
-  return contentReady.then(function (contentBlob) {
+  return fileReady.then(function (readyFile) {
+    file = readyFile; // everything below uses whichever file (transcoded or original) is actually being uploaded
+    var fileKey = randomKey();
+    var contentPath = state.userId + "/" + id + "/content";
+    // File *content* is no longer encrypted at all -- an explicit, confirmed
+    // choice. The bytes sit in R2 exactly as uploaded, readable by anything
+    // with bucket access. What this buys: video plays natively in seconds
+    // (the browser streams it straight from a URL instead of JS having to
+    // download and decrypt the whole file first), and there's no crypto cost
+    // on upload or download.
+    // Metadata (name, date, folder, dimensions) is still encrypted, as is
+    // the thumbnail -- those are small and cost nothing to protect.
+    // isLarge no longer decides encryption; it only picks which upload path
+    // is memory-safe. A big file streams from disk chunk-by-chunk into R2's
+    // multipart upload rather than being read into one in-memory Blob, which
+    // is what used to crash the tab on multi-GB video.
+    var isLarge = file.size > CHUNK_PLAIN_SIZE;
+
+    var contentReady = isLarge
+      ? Promise.resolve(null)
+      : file.arrayBuffer().then(function (buf) { return new Blob([new Uint8Array(buf)]); });
+
+    return contentReady.then(function (contentBlob) {
     return makeThumbnail(file, kind).catch(function () { return { blob: null, duration: null }; })
       .then(function (thumbInfo) {
         thumbInfo = thumbInfo || { blob: null, duration: null };
@@ -2938,6 +3066,7 @@ function prepareUpload(file, id, folder) {
           };
         });
       });
+    });
   });
 }
 
