@@ -1065,6 +1065,32 @@ function r2UploadFileEncrypted(path, file, fileKey, onProgress, signal) {
    stay fully encrypted as before. Which path an object went through is
    recorded in its (encrypted) metadata as contentEncrypted: false, so the
    right one gets picked automatically on download without guessing. */
+// A native <video> pointed at the Worker will only play what's served with
+// a real media content type -- Safari rejects "application/octet-stream"
+// with the exact same generic "Format error" an unsupported codec gives,
+// which is a genuinely misleading failure. Stored objects have no
+// extension in their path (userId/id/content), so the type has to come
+// from the item's own (encrypted, client-side) metadata and be handed to
+// the Worker explicitly. Returns null when there's nothing trustworthy to
+// send, in which case the Worker falls back to its own resolution.
+var STREAM_EXT_TYPES = {
+  mp4: "video/mp4", m4v: "video/x-m4v", mov: "video/quicktime", webm: "video/webm",
+  ogv: "video/ogg", avi: "video/x-msvideo", mkv: "video/x-matroska", "3gp": "video/3gpp",
+  mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", wav: "audio/wav", flac: "audio/flac",
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif",
+  webp: "image/webp", heic: "image/heic", heif: "image/heif", avif: "image/avif",
+};
+function streamMediaType(metaJson) {
+  var mime = (metaJson && metaJson.mime ? String(metaJson.mime) : "").split(";")[0].trim().toLowerCase();
+  if (/^(video|audio|image)\/[a-z0-9][a-z0-9.+-]{0,63}$/.test(mime)) return mime;
+  var ext = (metaJson && metaJson.ext ? String(metaJson.ext) : "").toLowerCase();
+  return STREAM_EXT_TYPES[ext] || null;
+}
+// Appends the resolved media type to a Worker /object URL, when there is one.
+function withStreamType(url, mediaType) {
+  return mediaType ? url + "&ct=" + encodeURIComponent(mediaType) : url;
+}
+
 function r2UploadFileRaw(path, file, onProgress, signal) {
   var total = file.size;
   if (onProgress) onProgress(0, total);
@@ -1077,7 +1103,9 @@ function r2UploadFileRaw(path, file, onProgress, signal) {
   var loaded = 0;
   return r2Fetch("/mpu/create", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path: path }), signal: signal,
+    // Recorded on the object itself so it's self-describing later, rather
+    // than every future read having to be told what it's serving.
+    body: JSON.stringify({ path: path, contentType: file.type || null }), signal: signal,
   }).then(function (r) { return r.json(); }).then(function (res) {
     uploadId = res.uploadId;
     function uploadPartWithRetry(partNumber, buf, attempt) {
@@ -2891,25 +2919,20 @@ function newUploadId() { return crypto.randomUUID ? crypto.randomUUID() : String
    First use in a session downloads ffmpeg's ~25-30MB core (cached by the
    browser after that), so the first transcode of a session has extra
    startup time beyond the encode itself. */
-// Set to 3GB at explicit request, past the ~2GB point flagged as the
-// practical ceiling. Restating the actual constraint plainly since this
-// goes beyond it: ffmpeg.wasm's single-threaded core (no COOP/COEP headers
+// Only reached now by a file the browser has already told us it CAN'T
+// play (see prepareVideoForUpload) -- normal, playable video never gets
+// near this path, whatever its size. So this cap isn't a limit on upload
+// size; it's the point past which converting in a browser tab stops
+// working at all. ffmpeg.wasm's single-threaded core (no COOP/COEP headers
 // on GitHub Pages, so the multi-threaded core isn't an option) has a hard
 // ~4GB total WebAssembly linear-memory ceiling shared between the input
-// file, the output file being built, AND ffmpeg's own decode/encode
-// working memory all at once. At 3GB of input, well under 1GB is left for
-// everything else, which for many real videos (output size comparable to
-// input, plus filter/working buffers) isn't enough -- expect this to fail
-// with an out-of-memory error on a real, not-rare, share of files in this
-// range, especially on mobile Safari or lower-end hardware, rather than
-// just being slow. It always falls back to the original (untranscoded)
-// file rather than blocking the upload when that happens (see
-// transcodeVideoForCompat), so a failure here doesn't break the upload --
-// it just means that file didn't get the compatibility fix.
-// This still does NOT cover this library's largest files (multi-GB, up to
-// 8GB) -- that gap is a hard wall, not a number to tune, and the only way
-// past it is server-side transcoding (a separate, bigger piece of work).
-var TRANSCODE_MAX_BYTES = 3 * 1024 * 1024 * 1024; // ~3GB -- past the recommended ceiling, set anyway on request
+// file, the output being built, and ffmpeg's own working memory. 2GB of
+// input already leaves those fighting over the remainder; past that it
+// reliably fails out-of-memory rather than being merely slow, so setting
+// it higher would just trade an honest "too big to convert" message for a
+// crash. Files above this upload untouched, with a clear note in the
+// Errors panel if they're also unplayable.
+var TRANSCODE_MAX_BYTES = 2 * 1024 * 1024 * 1024; // ~2GB
 var FFMPEG_JS_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.js";
 var FFMPEG_CORE_JS_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.js";
 var FFMPEG_CORE_WASM_URL = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/ffmpeg-core.wasm";
@@ -2948,6 +2971,65 @@ function loadFFmpeg() {
   // disable this for the rest of the session).
   ffmpegLoadPromise.catch(function () { ffmpegLoadPromise = null; });
   return ffmpegLoadPromise;
+}
+
+// Asks the browser directly whether it can make sense of this video, by
+// pointing a throwaway <video> at it and seeing whether metadata comes
+// back or it errors out. Cheap at any size: a blob: URL is lazily read,
+// so the browser only pulls the header it needs rather than the whole
+// file -- a 7GB file answers this about as fast as a 7MB one, and no
+// ffmpeg core gets downloaded to find out.
+function canBrowserPlay(file) {
+  return new Promise(function (resolve) {
+    var url = URL.createObjectURL(file);
+    var video = document.createElement("video");
+    var settled = false;
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      video.removeAttribute("src");
+      try { video.load(); } catch (e) {}
+      URL.revokeObjectURL(url);
+      resolve(ok);
+    }
+    // Some files neither load nor error -- don't hang an upload on one.
+    // Treating a no-answer as "playable" is the safe default here: it
+    // means upload as-is, which is exactly the old behavior.
+    var timer = setTimeout(function () { finish(true); }, 15000);
+    video.preload = "metadata";
+    video.muted = true;
+    video.addEventListener("loadedmetadata", function () { finish(true); });
+    video.addEventListener("error", function () { finish(false); });
+    video.src = url;
+  });
+}
+
+// Decides what (if anything) needs to happen to a video before upload.
+// The overwhelmingly common case is a file the browser already plays --
+// an iPhone recording, anything H.264/HEVC -- and that case must stay
+// fast: no conversion, no ffmpeg download, straight to upload. Converting
+// unconditionally (what this used to do) taxed every single upload to fix
+// a problem most files don't have, which is backwards when the priority
+// is getting big files up quickly.
+function prepareVideoForUpload(file, id) {
+  trayRowStatus(id, "Checking…");
+  return canBrowserPlay(file).then(function (playable) {
+    if (playable) { trayRowStatus(id, "Waiting…"); return file; }
+    if (file.size > TRANSCODE_MAX_BYTES) {
+      // Too big to convert in a browser tab, and not playable as-is.
+      // Say so loudly (this lands in the Errors panel) rather than
+      // uploading something that will silently refuse to play later.
+      console.error("[ghostdrive] " + file.name + " is in a format this browser can't play, and at "
+        + (file.size / 1073741824).toFixed(1) + "GB it's too large to convert in the browser. "
+        + "Uploading as-is -- expect playback to fail on this one.");
+      trayRowStatus(id, "Waiting…");
+      return file;
+    }
+    return transcodeVideoForCompat(file, function (frac) {
+      trayRowStatus(id, "Converting " + Math.round(frac * 100) + "%…");
+    }).then(function (outFile) { trayRowStatus(id, "Waiting…"); return outFile; });
+  });
 }
 
 // Re-encodes `file` to H.264/AAC MP4 for guaranteed playback everywhere.
@@ -3011,10 +3093,7 @@ function prepareUpload(file, id, folder) {
   // <video> element) works off content the viewer's browser can actually
   // decode. See transcodeVideoForCompat's own comment for the size cap and
   // why a failure here falls back to the original file instead of erroring.
-  var fileReady = kind === "video"
-    ? transcodeVideoForCompat(file, function (frac) { trayRowStatus(id, "Optimizing " + Math.round(frac * 100) + "%…"); })
-        .then(function (outFile) { trayRowStatus(id, "Waiting…"); return outFile; })
-    : Promise.resolve(file);
+  var fileReady = kind === "video" ? prepareVideoForUpload(file, id) : Promise.resolve(file);
 
   return fileReady.then(function (readyFile) {
     file = readyFile; // everything below uses whichever file (transcoded or original) is actually being uploaded
@@ -4615,8 +4694,12 @@ function openViewer(id) {
     if (record.kind === "video" && (viewerState.metaJson.contentEncrypted === false || playFast)) {
       mediaHost.innerHTML = "";
       var streamPath = playFast ? loaded.metaJson.previewPath : record.content_path;
-      var streamUrl = R2_WORKER_URL + "/object?path=" + encodeURIComponent(streamPath)
-        + "&auth=" + encodeURIComponent(R2_AUTH_SECRET);
+      // The fast preview is always an app-generated mp4; the original is
+      // whatever it was uploaded as. Either way the type has to travel with
+      // the request -- see streamMediaType for why.
+      var streamType = playFast ? "video/mp4" : streamMediaType(loaded.metaJson);
+      var streamUrl = withStreamType(R2_WORKER_URL + "/object?path=" + encodeURIComponent(streamPath)
+        + "&auth=" + encodeURIComponent(R2_AUTH_SECRET), streamType);
       var streamVideo = document.createElement("video");
       streamVideo.src = streamUrl;
       streamVideo.controls = true;
@@ -5239,8 +5322,8 @@ function loadReelVideo(id, onProgress) {
   // instead of waiting for the entire file to download first. This matters
   // most here: the feed is the main way videos get watched.
   if (loaded.metaJson.contentEncrypted === false) {
-    var streamUrl = R2_WORKER_URL + "/object?path=" + encodeURIComponent(record.content_path)
-      + "&auth=" + encodeURIComponent(R2_AUTH_SECRET);
+    var streamUrl = withStreamType(R2_WORKER_URL + "/object?path=" + encodeURIComponent(record.content_path)
+      + "&auth=" + encodeURIComponent(R2_AUTH_SECRET), streamMediaType(loaded.metaJson));
     // Not put through reelsCacheSet: that cache owns blob URLs and revokes
     // them on eviction, which would break a plain URL that was never a blob.
     if (onProgress) onProgress(1, 1); // nothing to wait on -- clear the loading bar immediately
