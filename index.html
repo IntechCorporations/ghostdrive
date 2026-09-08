@@ -348,7 +348,7 @@
     border-radius: 50%; align-items: center; justify-content: center; cursor: pointer;
   }
   .viewer-video-delete:hover { background: var(--danger); }
-  .viewer-video-delete svg { width: 17px; height: 17px; }
+  .viewer-video-delete svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
   .modal-content.media-mode .viewer-video-delete { display: flex; }
   .modal-content.media-mode .modal-close { color: #f5f1e6; background: rgba(20,18,12,0.55); border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; top: 12px; right: 14px; }
   .viewer-video-trim {
@@ -357,7 +357,7 @@
     border-radius: 50%; align-items: center; justify-content: center; cursor: pointer;
   }
   .viewer-video-trim:hover { background: var(--brass); color: #1c1406; }
-  .viewer-video-trim svg { width: 17px; height: 17px; }
+  .viewer-video-trim svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
   .modal-content.media-mode .viewer-video-trim { display: flex; }
   .viewer-photo-crop {
     position: absolute; top: 12px; right: 98px; z-index: 3;
@@ -365,15 +365,28 @@
     border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;
   }
   .viewer-photo-crop:hover { background: var(--brass); color: #1c1406; }
-  .viewer-photo-crop svg { width: 17px; height: 17px; }
+  .viewer-photo-crop svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
   .viewer-photo-crop.hidden { display: none; }
+  /* Rotate left / right -- photo-only, so they sit past the video-only
+     buttons rather than sharing a slot with any of them. */
+  .viewer-photo-rotate {
+    position: absolute; top: 12px; z-index: 3;
+    background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
+    border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  #btn-viewer-rotate-ccw { right: 266px; }
+  #btn-viewer-rotate-cw { right: 308px; }
+  .viewer-photo-rotate:hover { background: var(--brass); color: #1c1406; }
+  .viewer-photo-rotate:disabled { opacity: 0.5; cursor: default; }
+  .viewer-photo-rotate svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
+  .viewer-photo-rotate.hidden { display: none; }
   .viewer-video-details {
     display: none; position: absolute; top: 12px; right: 140px; z-index: 3;
     background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
     border-radius: 50%; align-items: center; justify-content: center; cursor: pointer;
   }
   .viewer-video-details:hover, .viewer-video-details.active { background: var(--brass); color: #1c1406; }
-  .viewer-video-details svg { width: 17px; height: 17px; }
+  .viewer-video-details svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
   .modal-content.media-mode .viewer-video-details { display: flex; }
   /* "Fast copy" / "Full quality" toggle, or "Speed up" for a video that
      doesn't have a fast copy yet -- see the "Fast video preview" JS section. */
@@ -395,7 +408,7 @@
     border-radius: 50%; align-items: center; justify-content: center; cursor: pointer;
   }
   .viewer-duplicate:hover { background: var(--brass); color: #1c1406; }
-  .viewer-duplicate svg { width: 17px; height: 17px; }
+  .viewer-duplicate svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
   .modal-content.media-mode .viewer-duplicate { display: flex; }
   /* The details panel stays fully hidden in video mode until the gear
      button above is clicked -- "one big screen" by default, same as
@@ -411,15 +424,16 @@
   .modal-content.media-mode .viewer-meta .hint { color: rgba(245,241,230,0.65); }
 
   /* ---------------- Photo crop ---------------- */
-  .crop-overlay { position: absolute; inset: 0; z-index: 4; }
+  .crop-overlay { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
   .crop-overlay.hidden { display: none; }
   .crop-box {
     position: absolute; border: 2px solid #fff; cursor: move;
     box-shadow: 0 0 0 2000px rgba(0,0,0,0.55); /* dims everything outside the box */
+    pointer-events: auto; touch-action: none;
   }
   .crop-handle {
     position: absolute; width: 14px; height: 14px; background: #fff; border-radius: 50%;
-    margin: -7px; border: 2px solid var(--brass);
+    margin: -7px; border: 2px solid var(--brass); pointer-events: auto; touch-action: none;
   }
   .crop-handle[data-handle="nw"] { top: 0; left: 0; cursor: nwse-resize; }
   .crop-handle[data-handle="ne"] { top: 0; right: 0; margin-right: -7px; cursor: nesw-resize; }
@@ -481,6 +495,24 @@
   .log-when { flex: none; color: var(--text-dim); font-size: 11px; font-family: var(--mono); }
 
   /* ---------------- Reels (full-screen swipeable video feed) ---------------- */
+  /* People panel -- face groups found on this device. */
+  .date-fields { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .date-fields input[type="date"] { flex: 1 1 150px; min-width: 140px; }
+  .date-fields input[type="time"] { flex: 0 1 120px; min-width: 100px; }
+  .date-fields .date-quick { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; }
+  .people-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .people-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 12px; }
+  .person-card {
+    background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px; display: flex; flex-direction: column; gap: 6px; align-items: center; text-align: center;
+  }
+  .person-card img { width: 96px; height: 96px; object-fit: cover; border-radius: 50%; background: #000; cursor: pointer; }
+  .person-card input {
+    width: 100%; text-align: center; font-size: 13px; padding: 4px 6px;
+    background: transparent; border: 1px solid transparent; border-radius: 6px; color: inherit;
+  }
+  .person-card input:hover, .person-card input:focus { border-color: var(--line); }
+  .person-card .person-count { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
   .reels-overlay {
     position: fixed; inset: 0; z-index: 200; background: #000;
     display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none;
@@ -492,6 +524,9 @@
      possibly-narrower, rendered box. */
   .reels-touch-surface { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; touch-action: none; }
   #reels-video { max-width: 100%; max-height: 100%; height: 100%; width: auto; object-fit: contain; background: #000; will-change: transform; }
+  /* Photos share the feed with videos and so share its geometry exactly --
+     same box, same drag transform, so a swipe feels identical either way. */
+  #reels-photo { max-width: 100%; max-height: 100%; height: 100%; width: auto; object-fit: contain; background: #000; will-change: transform; }
   .reels-empty { color: #f0ece0; font-size: 15px; }
   .reels-loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 120px; pointer-events: none; }
   .reels-loading.hidden { display: none; }
@@ -503,7 +538,7 @@
     font-size: 18px; padding: 0; cursor: pointer;
   }
   .reels-icon-btn:hover { background: rgba(20,18,12,0.8); filter: none; }
-  .reels-icon-btn svg { width: 19px; height: 19px; }
+  .reels-icon-btn svg { width: 19px; height: 19px; flex: 0 0 auto; display: block; }
   .reels-icon-btn.active { background: var(--brass); color: #1c1406; border-color: var(--brass); }
   .reels-close { position: absolute; top: calc(16px + env(safe-area-inset-top, 0px)); right: calc(16px + env(safe-area-inset-right, 0px)); z-index: 2; }
   .reels-top-controls {
@@ -668,7 +703,8 @@
           </label>
           <button type="button" id="btn-choose-files-resumable" class="secondary hidden" title="Large videos added this way keep uploading even if you close this tab (Chrome/Edge only)">+ Add large files (resumable)</button>
           <button type="button" id="btn-import-google-photos" class="secondary">Import from Google Photos</button>
-          <button type="button" id="btn-open-reels" class="secondary">&#9654; Watch videos</button>
+          <button type="button" id="btn-open-reels" class="secondary">&#9654; Shuffle feed</button>
+          <button type="button" id="btn-open-people" class="secondary">People</button>
           <button id="btn-lock">Sign out</button>
         </div>
       </header>
@@ -690,6 +726,9 @@
           </div>
           <div class="folder-control">
             <select id="folder-select" aria-label="Folder"></select>
+          </div>
+          <div class="person-control">
+            <select id="person-select" aria-label="Person"></select>
           </div>
           <div class="sort-control">
             <select id="sort-select">
@@ -738,20 +777,26 @@
       <button class="modal-nav modal-prev" id="btn-viewer-prev" aria-label="Previous">&#8249;</button>
       <button class="modal-nav modal-next" id="btn-viewer-next" aria-label="Next">&#8250;</button>
       <button class="viewer-video-delete" id="btn-viewer-delete-video" title="Delete" aria-label="Delete">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
       </button>
       <button class="viewer-video-trim" id="btn-viewer-trim" title="Trim" aria-label="Trim">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"/></svg>
       </button>
       <button class="viewer-photo-crop hidden" id="btn-viewer-crop-icon" title="Crop" aria-label="Crop">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+      </button>
+      <button class="viewer-photo-rotate hidden" id="btn-viewer-rotate-ccw" title="Rotate left" aria-label="Rotate left 90 degrees">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h11a5 5 0 0 1 5 5v1a5 5 0 0 1-5 5H8"/><polyline points="7 4 3 8 7 12"/></svg>
+      </button>
+      <button class="viewer-photo-rotate hidden" id="btn-viewer-rotate-cw" title="Rotate right" aria-label="Rotate right 90 degrees">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8H10a5 5 0 0 0-5 5v1a5 5 0 0 0 5 5h6"/><polyline points="17 4 21 8 17 12"/></svg>
       </button>
       <button class="viewer-video-details" id="btn-viewer-details" title="Details" aria-label="Details">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
       <button class="viewer-video-quality hidden" id="btn-viewer-quality" title="Playback quality" aria-label="Playback quality"></button>
       <button class="viewer-duplicate" id="btn-viewer-duplicate" title="Duplicate" aria-label="Duplicate">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       </button>
       <div id="trim-bar" class="trim-bar hidden">
         <div class="trim-bar-track">
@@ -780,9 +825,14 @@
       </div>
       <div class="viewer-meta">
         <input type="text" id="viewer-filename" placeholder="(unnamed)">
-        <label>Date
-          <input type="datetime-local" id="viewer-date">
+        <label>Date taken
+          <span class="date-fields">
+            <input type="date" id="viewer-date">
+            <input type="time" id="viewer-time">
+            <button type="button" id="btn-date-today" class="secondary date-quick">Today</button>
+          </span>
         </label>
+        <p class="hint" style="margin-top: -4px;">The date the photo or video was originally taken. Tap the field for a calendar.</p>
         <label>Folder
           <input type="text" id="viewer-folder" placeholder="(no folder)" list="folder-suggestions" autocomplete="off">
         </label>
@@ -825,26 +875,42 @@
   </div>
 </div>
 
+<div id="people-modal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-content log-modal-content">
+    <button class="modal-close" id="btn-people-close">&times;</button>
+    <h3>People</h3>
+    <p class="hint" style="margin-top: -6px;">Faces are found and grouped on this device — the photos never leave it for this, and no face data is sent anywhere. Grouping runs when you ask it to, so it never slows an upload down.</p>
+    <div class="people-actions">
+      <button type="button" id="btn-people-scan">Scan for new faces</button>
+      <button type="button" id="btn-people-rescan" class="secondary">Rescan everything</button>
+      <span id="people-scan-status" class="hint"></span>
+    </div>
+    <div id="people-list" class="people-list"></div>
+  </div>
+</div>
+
 <div id="reels-modal" class="reels-overlay hidden">
   <div id="reels-touch-surface" class="reels-touch-surface">
     <video id="reels-video" playsinline loop></video>
+    <img id="reels-photo" class="hidden" alt="">
     <div class="reels-loading hidden" id="reels-loading">
       <div class="reels-loading-track"><div class="reels-loading-fill" id="reels-loading-fill"></div></div>
     </div>
   </div>
-  <p id="reels-empty" class="reels-empty hidden">No videos yet.</p>
+  <p id="reels-empty" class="reels-empty hidden">Nothing to shuffle yet.</p>
   <button type="button" id="btn-reels-close" class="reels-icon-btn reels-close" title="Close (Esc)">&times;</button>
   <div class="reels-top-controls">
-    <button type="button" id="btn-reels-shuffle" class="reels-icon-btn" title="Shuffle"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg></button>
-    <button type="button" id="btn-reels-mute" class="reels-icon-btn" title="Mute"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
+    <button type="button" id="btn-reels-shuffle" class="reels-icon-btn" title="Shuffle"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg></button>
+    <button type="button" id="btn-reels-mute" class="reels-icon-btn" title="Mute"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
   </div>
   <div class="reels-vnav">
     <button type="button" id="btn-reels-prev" class="reels-icon-btn" aria-label="Previous video">&#9650;</button>
     <button type="button" id="btn-reels-next" class="reels-icon-btn" aria-label="Next video">&#9660;</button>
   </div>
   <div class="reels-vote">
-    <button type="button" id="btn-reels-upvote" class="reels-icon-btn" aria-label="I like this one" title="More like this"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 22V11M2 13v7a2 2 0 0 0 2 2h13.4a2 2 0 0 0 2-1.6l1.4-7A2 2 0 0 0 19 11h-5.5l.9-4.6A2 2 0 0 0 12.5 4L7 11"/></svg></button>
-    <button type="button" id="btn-reels-downvote" class="reels-icon-btn" aria-label="Show me less of this" title="Less like this"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="transform: scale(-1)"><path d="M7 22V11M2 13v7a2 2 0 0 0 2 2h13.4a2 2 0 0 0 2-1.6l1.4-7A2 2 0 0 0 19 11h-5.5l.9-4.6A2 2 0 0 0 12.5 4L7 11"/></svg></button>
+    <button type="button" id="btn-reels-upvote" class="reels-icon-btn" aria-label="I like this one" title="More like this"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 22V11M2 13v7a2 2 0 0 0 2 2h13.4a2 2 0 0 0 2-1.6l1.4-7A2 2 0 0 0 19 11h-5.5l.9-4.6A2 2 0 0 0 12.5 4L7 11"/></svg></button>
+    <button type="button" id="btn-reels-downvote" class="reels-icon-btn" aria-label="Show me less of this" title="Less like this"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="transform: scale(-1)"><path d="M7 22V11M2 13v7a2 2 0 0 0 2 2h13.4a2 2 0 0 0 2-1.6l1.4-7A2 2 0 0 0 19 11h-5.5l.9-4.6A2 2 0 0 0 12.5 4L7 11"/></svg></button>
   </div>
   <div id="reels-info" class="reels-info"></div>
   <div class="reels-seekbar-wrap" id="reels-seekbar-wrap">
@@ -1458,6 +1524,13 @@ var BUCKET = "ghostdrive";
 // row for each item; only the encrypted bytes moved to R2. All R2 access
 // goes through a small Cloudflare Worker (ghostdrive-r2-worker) that holds
 // the actual R2 credentials -- the browser never sees them.
+// Bumped whenever a change ships. Logged on boot so "is the deployed copy
+// actually the new one?" is answerable in one glance at the console --
+// GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
+// that question cost real debugging time more than once.
+var GHOSTDRIVE_BUILD = "2026-09-08b people-feed-rotate-dates";
+console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
+
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
 var R2_AUTH_SECRET = "oH2CAcRsb9Lctw8cWOVq7TeuaY6vk0Y6axj88Mqfeyw";
 // Plaintext is encrypted in fixed-size chunks (framed with a length prefix)
@@ -1510,6 +1583,9 @@ function enterVault() {
   // so it doesn't compete with the gallery's own thumbnails for bandwidth
   // on first paint -- the gallery is what's actually on screen right now.
   setTimeout(function () { prewarmReels().catch(function () {}); }, 1500);
+  // Pull down any face groups another device already worked out, so the
+  // People panel isn't empty here just because the scan ran over there.
+  loadPeopleRegistryFromVault().then(function () { renderPersonOptions(); }).catch(function () {});
 }
 
 /* ---------------- Vault crypto material: created on first login, reused after ----------------
@@ -2673,6 +2749,16 @@ $("#btn-import-google-photos").addEventListener("click", function () {
    (or can't decode at all) — classified by extension so they're still
    filterable as "photo" and get a real label instead of a generic icon. */
 var RAW_EXTENSIONS = ["cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf", "pef", "srw", "heic", "heif"];
+// Subset of RAW_EXTENSIONS that NO browser can decode via a plain <img> tag,
+// so the viewer should skip straight to the embedded-preview fallback for
+// them. HEIC/HEIF is deliberately excluded: Safari (this app's primary
+// browser) decodes HEIC natively in <img>, so those should attempt the
+// normal image path first and only drop to the fallback through imgEl's
+// own onerror handler on browsers that can't. HEIC used to display fine on
+// Safari; it stopped the day HEIC/HEIF was folded into RAW_EXTENSIONS and
+// started being force-routed around the native path for every browser,
+// Safari included -- this list is what undoes that.
+var IMG_UNDECODABLE_EXTENSIONS = ["cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf", "pef", "srw"];
 var VIDEO_EXTENSIONS = ["mov", "avi", "mkv", "mp4", "m4v", "3gp", "webm"];
 function fileExt(name) {
   var m = /\.([a-z0-9]+)$/i.exec(name || "");
@@ -2738,6 +2824,102 @@ function scanForLargestEmbeddedJpeg(arrayBuffer) {
   }
   return best ? bytes.slice(best.start, best.start + best.length) : null;
 }
+/* ---------------- Original capture date ----------------
+   The date shown for an item should be when it was taken, full stop --
+   never when it was uploaded here, edited, or last touched on disk.
+   file.lastModified is none of those things reliably: copying a photo
+   between devices or exporting it rewrites it to the copy's date, which is
+   how "uploaded today" ends up on a photo from years ago.
+   So the real capture time is read out of the file itself: EXIF for
+   photos, and the movie header for MP4/MOV (which is where a phone records
+   when a clip was actually shot). Only if a file genuinely carries no
+   capture time does this fall back to its filesystem timestamp. */
+function readExifCaptureDate(file) {
+  if (!window.exifr || !exifr.parse) return Promise.resolve(null);
+  return exifr.parse(file, { pick: ["DateTimeOriginal", "CreateDate", "ModifyDate"] })
+    .then(function (tags) {
+      if (!tags) return null;
+      var d = tags.DateTimeOriginal || tags.CreateDate || tags.ModifyDate;
+      return (d instanceof Date && !isNaN(d.getTime())) ? d.toISOString() : null;
+    })
+    .catch(function () { return null; });
+}
+
+// MP4/MOV store creation time in the movie header (mvhd), counted in
+// seconds from 1904-01-01 UTC. Finding it means walking the file's top
+// level box by box -- but only the 8-byte headers are ever read, so this
+// costs a few small reads even on a 7GB file, and works whether the moov
+// box sits at the front or (as is common straight off a camera) the end.
+var MP4_EPOCH_OFFSET_SECONDS = 2082844800; // 1904-01-01 -> 1970-01-01
+function readVideoCaptureDate(file) {
+  function readSlice(start, length) {
+    return file.slice(start, start + length).arrayBuffer().then(function (buf) { return new DataView(buf); });
+  }
+  function parseMvhdFrom(moovStart, moovSize) {
+    // mvhd is the first child of moov in every file that has one; read a
+    // small window rather than the whole (potentially large) moov box.
+    var window_ = Math.min(moovSize, 512);
+    return readSlice(moovStart, window_).then(function (view) {
+      // Starts at 0, not at the box header's length: mvhd is moov's first
+      // child, so its type bytes sit only four bytes in.
+      for (var off = 0; off + 20 < view.byteLength; off++) {
+        if (view.getUint8(off) === 0x6d && view.getUint8(off + 1) === 0x76 &&
+            view.getUint8(off + 2) === 0x68 && view.getUint8(off + 3) === 0x64) { // "mvhd"
+          var version = view.getUint8(off + 4);
+          var seconds;
+          if (version === 1) {
+            var high = view.getUint32(off + 8);
+            var low = view.getUint32(off + 12);
+            seconds = high * 4294967296 + low;
+          } else {
+            seconds = view.getUint32(off + 8);
+          }
+          if (!seconds) return null;
+          var ms = (seconds - MP4_EPOCH_OFFSET_SECONDS) * 1000;
+          var d = new Date(ms);
+          var year = d.getFullYear();
+          if (isNaN(ms) || year < 1980 || year > 2100) return null; // clearly not a real capture time
+          return d.toISOString();
+        }
+      }
+      return null;
+    });
+  }
+  function walk(offset, guard) {
+    if (guard > 64 || offset + 8 > file.size) return Promise.resolve(null);
+    return readSlice(offset, 16).then(function (view) {
+      if (view.byteLength < 8) return null;
+      var size = view.getUint32(0);
+      var type = String.fromCharCode(view.getUint8(4), view.getUint8(5), view.getUint8(6), view.getUint8(7));
+      var headerSize = 8;
+      if (size === 1) { // 64-bit extended size
+        if (view.byteLength < 16) return null;
+        size = view.getUint32(8) * 4294967296 + view.getUint32(12);
+        headerSize = 16;
+      } else if (size === 0) {
+        size = file.size - offset; // box runs to end of file
+      }
+      if (size < headerSize) return null;
+      if (type === "moov") return parseMvhdFrom(offset + headerSize, size - headerSize);
+      return walk(offset + size, guard + 1);
+    }).catch(function () { return null; });
+  }
+  return walk(0, 0).catch(function () { return null; });
+}
+
+// Returns { date, source } -- source is recorded so a later pass can tell
+// a real capture time apart from a filesystem-timestamp guess.
+function readCaptureDate(file, kind) {
+  var embedded = kind === "video" ? readVideoCaptureDate(file) : readExifCaptureDate(file);
+  return embedded.then(function (iso) {
+    if (iso) return { date: iso, source: kind === "video" ? "video-header" : "exif" };
+    if (file.lastModified) return { date: new Date(file.lastModified).toISOString(), source: "file" };
+    return { date: new Date().toISOString(), source: "unknown" };
+  }).catch(function () {
+    return { date: new Date(file.lastModified || Date.now()).toISOString(), source: "file" };
+  });
+}
+
 function extractEmbeddedPreview(fileOrBlob) {
   var viaExifr = (window.exifr && window.exifr.thumbnail)
     ? exifr.thumbnail(fileOrBlob).then(function (arrayBuffer) {
@@ -3126,16 +3308,21 @@ function prepareUpload(file, id, folder) {
           ? thumbInfo.blob.arrayBuffer().then(function (tb) { return new Blob([encryptChunkFrame(fileKey, new Uint8Array(tb))]); })
           : Promise.resolve(null);
 
-        return thumbBlobPromise.then(function (thumbBlob) {
-          // The date starts out as the file's own timestamp (or "now," for a
-          // camera-less file) — exactly like Google Photos — but from this
-          // point on it's a plain editable field, same as the filename. New
-          // uploads land in whatever folder was open when the file was
-          // picked, same as dropping a file into a folder on your computer;
-          // leave "All items" open and they stay unfiled.
-          var defaultDate = new Date(file.lastModified || Date.now()).toISOString();
+        return Promise.all([thumbBlobPromise, readCaptureDate(file, kind)]).then(function (parts) {
+          var thumbBlob = parts[0];
+          var captured = parts[1];
+          // The date is the file's ORIGINAL capture time, read out of the
+          // file itself (EXIF, or a video's movie header) -- not when it was
+          // uploaded, and not when the operating system last touched it.
+          // Only a file that carries no capture time at all falls back to
+          // its filesystem timestamp. From here it's a plain editable
+          // field, same as the filename. New uploads land in whatever
+          // folder was open when the file was picked, same as dropping a
+          // file into a folder on your computer; leave "All items" open and
+          // they stay unfiled.
           var metadata = {
-            name: file.name, mime: file.type || "application/octet-stream", date: defaultDate,
+            name: file.name, mime: file.type || "application/octet-stream", date: captured.date,
+            dateSource: captured.source,
             folder: folder, size: file.size, ext: fileExt(file.name), duration: thumbInfo.duration,
             width: thumbInfo.width || null, height: thumbInfo.height || null,
             // Large files skip content encryption entirely (an explicit,
@@ -3765,6 +3952,23 @@ function toDatetimeLocalValue(isoDate) {
   var pad = function (n) { return String(n).padStart(2, "0"); };
   return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
 }
+/* The date field is split into separate date and time inputs rather than
+   one datetime-local: type="date" is what gets you an actual tappable
+   calendar (Safari included), where datetime-local is a fiddly stepper on
+   several browsers. Time stays optional -- blank means midnight. */
+function toDateInputValue(isoDate) {
+  var v = toDatetimeLocalValue(isoDate);
+  return v ? v.split("T")[0] : "";
+}
+function toTimeInputValue(isoDate) {
+  var v = toDatetimeLocalValue(isoDate);
+  return v ? v.split("T")[1] : "";
+}
+function dateFieldsToIso(dateValue, timeValue) {
+  if (!dateValue) return null;
+  var d = new Date(dateValue + "T" + (timeValue || "00:00"));
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
 
 var currentSort = "date_desc";
 $("#sort-select").addEventListener("change", function (e) { currentSort = e.target.value; refreshGallery(); });
@@ -3932,6 +4136,12 @@ function refreshGallery() {
 
     var items = currentFolder ? allItems.filter(function (it) { return (it.metaJson.folder || "") === currentFolder; }) : allItems;
     if (currentType) items = items.filter(function (it) { return it.record.kind === currentType; });
+    if (currentPerson) {
+      items = items.filter(function (it) {
+        return (it.metaJson.people || []).indexOf(currentPerson) !== -1;
+      });
+    }
+    renderPersonOptions();
     $("#empty-state").classList.toggle("hidden", items.length > 0);
     $("#empty-state").textContent = currentFolder
       ? 'Nothing in "' + currentFolder + '" yet. Drag files in, or move some over from another folder.'
@@ -3943,7 +4153,7 @@ function refreshGallery() {
     var totalCount = allItems.length;
     var visibleCount = items.length;
     var noun = function (n) { return n === 1 ? "item" : "items"; };
-    $("#file-count").textContent = (currentFolder || currentType)
+    $("#file-count").textContent = (currentFolder || currentType || currentPerson)
       ? visibleCount + " of " + totalCount + " " + noun(totalCount)
       : totalCount + " " + noun(totalCount);
 
@@ -4306,12 +4516,12 @@ function renderTile(record, metaJson) {
   } else {
     tile.classList.add("placeholder");
     if (record.kind === "video") {
-      tile.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 9l5-3v12l-5-3"/></svg>';
+      tile.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 9l5-3v12l-5-3"/></svg>';
     } else if (metaJson.ext) {
       tile.classList.add("ext-label");
       tile.textContent = metaJson.ext.toUpperCase();
     } else {
-      tile.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+      tile.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
     }
   }
 
@@ -4628,10 +4838,12 @@ function openViewer(id) {
     }
 
     $("#viewer-filename").value = loaded.metaJson.name || "";
-    $("#viewer-date").value = toDatetimeLocalValue(loaded.metaJson.date);
+    $("#viewer-date").value = toDateInputValue(loaded.metaJson.date);
+    $("#viewer-time").value = toTimeInputValue(loaded.metaJson.date);
     $("#viewer-folder").value = loaded.metaJson.folder || "";
     $("#btn-viewer-crop").classList.add("hidden");
     $("#btn-viewer-crop-icon").classList.add("hidden");
+    $$(".viewer-photo-rotate").forEach(function (b) { b.classList.add("hidden"); });
     $("#btn-viewer-trim").classList.add("hidden");
     exitCropMode();
     exitTrimMode();
@@ -4759,7 +4971,7 @@ function openViewer(id) {
 
     var ext = (viewerState.metaJson.ext || "").toLowerCase();
     var isVideo = (viewerState.metaJson.mime || "").indexOf("video/") === 0 || VIDEO_EXTENSIONS.indexOf(ext) !== -1;
-    var isRaw = !isVideo && RAW_EXTENSIONS.indexOf(ext) !== -1;
+    var isRaw = !isVideo && IMG_UNDECODABLE_EXTENSIONS.indexOf(ext) !== -1;
     var modalContentEl = document.querySelector("#viewer-modal .modal-content");
     if (modalContentEl) modalContentEl.classList.toggle("media-mode", isVideo || !isRaw);
 
@@ -4791,6 +5003,7 @@ function openViewer(id) {
       // touch the actual RAW original, so cropping isn't offered here.
       $("#btn-viewer-crop").classList.add("hidden");
       $("#btn-viewer-crop-icon").classList.add("hidden");
+      $$(".viewer-photo-rotate").forEach(function (b) { b.classList.add("hidden"); });
       renderRawFallback(mediaHost, blob, url, ext);
       return;
     }
@@ -4802,6 +5015,7 @@ function openViewer(id) {
       // Safari) -- same embedded-preview fallback as RAW.
       $("#btn-viewer-crop").classList.add("hidden");
       $("#btn-viewer-crop-icon").classList.add("hidden");
+      $$(".viewer-photo-rotate").forEach(function (b) { b.classList.add("hidden"); });
       imgEl.remove();
       renderRawFallback(mediaHost, blob, url, ext);
     };
@@ -4837,6 +5051,7 @@ function openViewer(id) {
     // behind the gear icon. This makes it act as a second, more visible
     // trigger for the exact same crop flow.
     $("#btn-viewer-crop-icon").classList.remove("hidden");
+    $$(".viewer-photo-rotate").forEach(function (b) { b.classList.remove("hidden"); });
   }).catch(function (err) {
     $("#viewer-media").textContent = "Couldn't load this file: " + friendlyError(err);
   });
@@ -4902,6 +5117,17 @@ document.addEventListener("keydown", function (e) {
 
 $("#btn-viewer-close").addEventListener("click", closeViewer);
 function closeViewer() {
+  // Hiding the modal is just a CSS class -- it does NOT stop a <video>
+  // that's mid-playback, so without this the audio (and decode work) just
+  // kept running behind the closed modal until you reloaded the page.
+  // Mirrors what closeReels() already does for the Reels player.
+  try {
+    if (viewerState.videoEl) {
+      viewerState.videoEl.pause();
+      viewerState.videoEl.removeAttribute("src");
+      viewerState.videoEl.load();
+    }
+  } catch (e) {}
   // Defensive: force every overlay this modal can enter (crop box, trim
   // bar, details panel) back to hidden directly, rather than only relying
   // on exitCropMode/exitTrimMode running cleanly below. Any of those can
@@ -4952,8 +5178,84 @@ function enterCropMode() {
   $("#crop-overlay").classList.remove("hidden");
   $("#crop-actions").classList.remove("hidden");
 }
+$("#btn-date-today").addEventListener("click", function () {
+  var now = new Date();
+  var pad = function (n) { return String(n).padStart(2, "0"); };
+  $("#viewer-date").value = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+  if (!$("#viewer-time").value) $("#viewer-time").value = pad(now.getHours()) + ":" + pad(now.getMinutes());
+});
 $("#btn-viewer-crop").addEventListener("click", enterCropMode);
 $("#btn-viewer-crop-icon").addEventListener("click", enterCropMode);
+
+/* ---------------- Photo rotate ----------------
+   A real, saved rotation: the displayed image is redrawn into a canvas
+   turned 90 degrees, and those bytes replace the stored ones through the
+   same replaceObjectContent path crop uses -- so the rotation sticks
+   everywhere (gallery thumbnail included, since a fresh thumbnail is
+   generated from the rotated bytes), on every device, rather than being a
+   CSS transform that only looks right in this one viewer.
+   Canvas can only *encode* jpeg/png/webp, so a format it can't write back
+   (HEIC being the one that actually comes up) is saved as JPEG and its
+   mime patched to match -- the alternative is a file whose bytes and
+   declared type disagree, which is exactly the class of bug that made
+   video unplayable earlier. */
+var CANVAS_ENCODABLE_MIME = ["image/jpeg", "image/png", "image/webp"];
+
+function rotateCurrentPhoto(direction) {
+  var img = viewerState.imgEl;
+  if (!img || !viewerState.id) return;
+  if (!img.naturalWidth || !img.naturalHeight) return; // nothing decoded to rotate
+  var buttons = $$(".viewer-photo-rotate");
+  buttons.forEach(function (b) { b.disabled = true; });
+  function release() { buttons.forEach(function (b) { b.disabled = false; }); }
+
+  var w = img.naturalWidth, h = img.naturalHeight;
+  var canvas = document.createElement("canvas");
+  canvas.width = h; canvas.height = w; // 90 degrees either way swaps the axes
+  var ctx = canvas.getContext("2d");
+  if (direction === "cw") {
+    ctx.translate(h, 0);
+    ctx.rotate(Math.PI / 2);
+  } else {
+    ctx.translate(0, w);
+    ctx.rotate(-Math.PI / 2);
+  }
+  ctx.drawImage(img, 0, 0);
+
+  var sourceMime = (viewerState.metaJson.mime || "").toLowerCase();
+  var outMime = CANVAS_ENCODABLE_MIME.indexOf(sourceMime) !== -1 ? sourceMime : "image/jpeg";
+
+  new Promise(function (resolve) { canvas.toBlob(resolve, outMime, 0.92); })
+    .then(function (rotatedBlob) {
+      if (!rotatedBlob) throw new Error("this browser couldn't re-encode the rotated image");
+      return sb.from("objects").select("*").eq("id", viewerState.id).maybeSingle().then(function (res) {
+        if (res.error) throw res.error;
+        var rec = res.data;
+        if (!rec) throw new Error("this item no longer exists");
+        return createImageBitmap(rotatedBlob).then(function (bitmap) {
+          return bitmapToJpegBlob(bitmap, 320).then(function (thumbBlob) {
+            return replaceObjectContent(rec, viewerState.fileKey, viewerState.metaJson, rotatedBlob, thumbBlob, {
+              width: h, height: w, size: rotatedBlob.size, mime: outMime,
+            });
+          });
+        });
+      });
+    }).then(function (patchedMeta) {
+      viewerState.metaJson = patchedMeta;
+      release();
+      refreshGallery();
+      // Release the pre-rotation object URL before the reload replaces it.
+      try { if (viewerState.mediaUrl) URL.revokeObjectURL(viewerState.mediaUrl); } catch (e) {}
+      try { if (viewerState.previewUrl) URL.revokeObjectURL(viewerState.previewUrl); } catch (e) {}
+      openViewer(viewerState.id); // reload from the rotated bytes
+    }).catch(function (err) {
+      release();
+      console.error("[ghostdrive] rotate failed:", err);
+      alert("Couldn't rotate this photo: " + friendlyError(err));
+    });
+}
+$("#btn-viewer-rotate-cw").addEventListener("click", function () { rotateCurrentPhoto("cw"); });
+$("#btn-viewer-rotate-ccw").addEventListener("click", function () { rotateCurrentPhoto("ccw"); });
 
 $("#btn-viewer-duplicate").addEventListener("click", function () {
   if (!viewerState || !viewerState.id) return;
@@ -5206,12 +5508,15 @@ $("#btn-trim-apply").addEventListener("click", function () {
 
 $("#btn-viewer-save").addEventListener("click", function () {
   if (!viewerState.id) return;
-  var rawDate = $("#viewer-date").value;
+  var newDate = dateFieldsToIso($("#viewer-date").value, $("#viewer-time").value);
   var newFolder = $("#viewer-folder").value.trim();
   if (newFolder) knownFolders.add(newFolder);
   var updated = Object.assign({}, viewerState.metaJson, {
     name: $("#viewer-filename").value || viewerState.metaJson.name,
-    date: rawDate ? new Date(rawDate).toISOString() : null,
+    date: newDate,
+    // A hand-picked date is the authoritative one from here on -- recorded
+    // so nothing later mistakes it for a filesystem-timestamp guess.
+    dateSource: newDate ? "manual" : viewerState.metaJson.dateSource,
     folder: newFolder,
   });
   var encryptedMetadata = toB64(encryptBytes(viewerState.fileKey, new TextEncoder().encode(JSON.stringify(updated))));
@@ -5264,6 +5569,394 @@ $("#btn-viewer-details").addEventListener("click", function () {
    -- a small LRU cache of decrypted object URLs -- so swiping feels instant
    instead of waiting on a fresh download + decrypt every single time. */
 var REELS_CACHE_LIMIT = 4;
+/* ---------------- Faces & people ----------------
+   Groups the same face across the library into "people", entirely on this
+   device: the models run in this tab (face-api.js / TFJS), the descriptors
+   never leave it, and nothing about a face is ever uploaded -- what gets
+   stored is a short opaque group id per item, inside the same encrypted
+   metadata blob everything else lives in.
+
+   Two deliberate design calls:
+   - Scanning is manual (a button in the People panel), not part of upload.
+     The models are several MB and detection isn't free; hanging that off
+     every upload would undo exactly the fast-path work that made large
+     uploads usable again.
+   - Detection runs against each item's existing 320px thumbnail, not the
+     original file. It's already generated, already small, and already
+     what the gallery downloads anyway -- so a full library scan costs
+     roughly what scrolling the gallery costs, instead of re-downloading
+     every original.
+
+   The groups feed the shuffle feed's ranking (see personAffinityForItem):
+   watch the people you actually care about and more of them comes up, the
+   same way a feed learns you like a particular account. */
+var FACE_API_SRC = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/dist/face-api.js";
+var FACE_MODEL_BASE = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.15/model";
+var PEOPLE_KEY = "ghostdrive-people-v1";
+// Squared-euclidean-free plain distance between two 128-d descriptors.
+// 0.6 is face-api's own conventional "same person" line; a little tighter
+// here because splitting two people apart by hand is easy in the People
+// panel, while un-merging a group that swallowed two faces is not.
+var FACE_MATCH_DISTANCE = 0.55;
+var FACE_SCAN_VERSION = 1;
+
+var faceApiPromise = null;
+function loadFaceApi() {
+  if (faceApiPromise) return faceApiPromise;
+  faceApiPromise = loadScriptTag(FACE_API_SRC).then(function () {
+    if (!window.faceapi) throw new Error("face detection library failed to load");
+    return Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(FACE_MODEL_BASE),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(FACE_MODEL_BASE),
+      faceapi.nets.faceRecognitionNet.loadFromUri(FACE_MODEL_BASE),
+    ]);
+  }).catch(function (err) {
+    faceApiPromise = null; // let a later attempt retry from scratch
+    throw err;
+  });
+  return faceApiPromise;
+}
+
+/* The registry of known people. Kept in localStorage for instant reads on
+   this device, and mirrored (encrypted, like everything else) into the
+   vault row so other devices inherit the same groups. The mirror is
+   best-effort on purpose: if the vaults table has no column for it, the
+   feature still works fully on the device that did the scanning rather
+   than failing outright. */
+var peopleRegistry = null;
+var peopleSyncUnavailable = false;
+
+function blankPeopleRegistry() { return { v: 1, people: {} }; }
+function getPeopleRegistry() {
+  if (peopleRegistry) return peopleRegistry;
+  try {
+    var raw = localStorage.getItem(PEOPLE_KEY);
+    peopleRegistry = raw ? JSON.parse(raw) : blankPeopleRegistry();
+  } catch (e) { peopleRegistry = blankPeopleRegistry(); }
+  if (!peopleRegistry || !peopleRegistry.people) peopleRegistry = blankPeopleRegistry();
+  return peopleRegistry;
+}
+function savePeopleRegistry() {
+  var reg = getPeopleRegistry();
+  try { localStorage.setItem(PEOPLE_KEY, JSON.stringify(reg)); } catch (e) {}
+  if (peopleSyncUnavailable || !state.masterKey || !state.userId) return;
+  try {
+    var payload = toB64(encryptText(state.masterKey, JSON.stringify(reg)));
+    sb.from("vaults").update({ encrypted_people_index: payload }).eq("user_id", state.userId).then(function (res) {
+      if (res && res.error) {
+        // Almost always "column does not exist" -- the one manual step this
+        // feature needs. Warn (not console.error) so it doesn't pile into
+        // the Errors panel as if something broke.
+        peopleSyncUnavailable = true;
+        console.warn("[ghostdrive] people groups are staying on this device only:", res.error.message || res.error);
+      }
+    });
+  } catch (e) { peopleSyncUnavailable = true; }
+}
+function loadPeopleRegistryFromVault() {
+  if (!state.masterKey || !state.userId) return Promise.resolve();
+  return Promise.resolve(sb.from("vaults").select("encrypted_people_index").eq("user_id", state.userId).maybeSingle())
+    .then(function (res) {
+      if (!res || res.error || !res.data || !res.data.encrypted_people_index) return;
+      var remote = JSON.parse(decryptText(state.masterKey, fromB64(res.data.encrypted_people_index)));
+      if (!remote || !remote.people) return;
+      var local = getPeopleRegistry();
+      // Union rather than overwrite: two devices that each scanned part of
+      // the library should end up with both halves, not whichever wrote last.
+      Object.keys(remote.people).forEach(function (pid) {
+        if (!local.people[pid]) local.people[pid] = remote.people[pid];
+      });
+      try { localStorage.setItem(PEOPLE_KEY, JSON.stringify(local)); } catch (e) {}
+    }).catch(function () {});
+}
+
+function faceDistance(a, b) {
+  var sum = 0;
+  for (var i = 0; i < a.length; i++) { var d = a[i] - b[i]; sum += d * d; }
+  return Math.sqrt(sum);
+}
+function newPersonId() {
+  return "p_" + Math.random().toString(36).slice(2, 10);
+}
+// Nearest-centroid matching with a running average per group: each new
+// face nudges its group's centroid rather than replacing it, so a group
+// gets steadily more robust to lighting/angle as it collects more of the
+// same person.
+function matchOrCreatePerson(descriptor, sampleItemId) {
+  var reg = getPeopleRegistry();
+  var bestId = null, bestDist = Infinity;
+  Object.keys(reg.people).forEach(function (pid) {
+    var person = reg.people[pid];
+    if (!person.centroid || person.centroid.length !== descriptor.length) return;
+    var d = faceDistance(descriptor, person.centroid);
+    if (d < bestDist) { bestDist = d; bestId = pid; }
+  });
+  if (bestId && bestDist < FACE_MATCH_DISTANCE) {
+    var p = reg.people[bestId];
+    var n = (p.count || 1);
+    for (var i = 0; i < p.centroid.length; i++) {
+      p.centroid[i] = (p.centroid[i] * n + descriptor[i]) / (n + 1);
+    }
+    p.count = n + 1;
+    if (!p.sampleItemId) p.sampleItemId = sampleItemId;
+    return bestId;
+  }
+  var id = newPersonId();
+  reg.people[id] = {
+    id: id, name: "", centroid: Array.prototype.slice.call(descriptor),
+    count: 1, sampleItemId: sampleItemId, createdAt: Date.now(),
+  };
+  return id;
+}
+
+function imageFromUrl(url) {
+  return new Promise(function (resolve, reject) {
+    var img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = function () { resolve(img); };
+    img.onerror = function () { reject(new Error("thumbnail wouldn't decode")); };
+    img.src = url;
+  });
+}
+
+function detectPeopleInThumbnail(record) {
+  return loadThumbnail(record).then(function (url) {
+    if (!url) return [];
+    return imageFromUrl(url).then(function (img) {
+      return faceapi
+        .detectAllFaces(img, new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }))
+        .withFaceLandmarks(true)
+        .withFaceDescriptors();
+    }).then(function (results) {
+      return (results || []).map(function (r) { return r.descriptor; });
+    });
+  }).catch(function () { return []; }); // one unreadable item never stops a scan
+}
+
+// Writes the group ids back into the item's own encrypted metadata, so the
+// tagging travels with the item (and across devices) rather than living in
+// a separate index that could drift out of sync with the library.
+function savePeopleTags(record, fileKey, metaJson, personIds) {
+  // Re-read the row immediately before writing. A library scan can run for
+  // minutes, and the metadata snapshot it started from goes stale the
+  // moment anything else edits that item (a rename, a date fix, a rotate --
+  // which also rewrites width/height/mime). Writing the stale blob back
+  // would silently undo those edits, so only the two face fields are
+  // layered onto whatever the row says *now*.
+  return Promise.resolve(sb.from("objects").select("*").eq("id", record.id).maybeSingle())
+    .then(function (res) {
+      if (res.error || !res.data) return null;
+      var fresh;
+      try { fresh = loadObjectMeta(res.data); } catch (e) { return null; }
+      var patched = Object.assign({}, fresh.metaJson, { people: personIds, faceScanV: FACE_SCAN_VERSION });
+      var encryptedMetadata = toB64(encryptBytes(fresh.fileKey, new TextEncoder().encode(JSON.stringify(patched))));
+      return sb.from("objects").update({ encrypted_metadata: encryptedMetadata }).eq("id", record.id);
+    });
+}
+
+var peopleScanRunning = false;
+function scanLibraryForFaces(rescanEverything) {
+  if (peopleScanRunning) return Promise.resolve();
+  peopleScanRunning = true;
+  var statusEl = $("#people-scan-status");
+  function status(text) { if (statusEl) statusEl.textContent = text; }
+  status("Loading face models…");
+
+  return loadFaceApi().then(function () {
+    status("Reading library…");
+    return sb.from("objects").select("*").eq("user_id", state.userId).in("kind", ["photo", "video"]);
+  }).then(function (res) {
+    if (res.error) throw res.error;
+    var records = res.data || [];
+    var queue = records.map(function (record) {
+      // A row whose metadata won't decrypt (legacy or damaged) must not take
+      // the whole scan down with it -- drop it and carry on.
+      try {
+        var loaded = loadObjectMeta(record);
+        return { record: record, fileKey: loaded.fileKey, metaJson: loaded.metaJson };
+      } catch (e) { return null; }
+    }).filter(function (it) {
+      return it && (rescanEverything || it.metaJson.faceScanV !== FACE_SCAN_VERSION);
+    });
+    if (!queue.length) { status("Everything's already grouped."); return; }
+
+    var done = 0, found = 0;
+    // Strictly one at a time: face detection is the heaviest thing this
+    // tab ever does, and running a queue of them in parallel makes the
+    // whole UI stutter for no throughput gain.
+    function step() {
+      if (done >= queue.length) {
+        savePeopleRegistry();
+        status("Done — " + found + " " + (found === 1 ? "face" : "faces") + " across " + queue.length + " items.");
+        renderPeopleList();
+        renderPersonOptions();
+        return Promise.resolve();
+      }
+      var item = queue[done];
+      status("Scanning " + (done + 1) + " of " + queue.length + "…");
+      return detectPeopleInThumbnail(item.record).then(function (descriptors) {
+        var ids = descriptors.map(function (d) { return matchOrCreatePerson(d, item.record.id); });
+        found += ids.length;
+        // De-duplicate: two detections of the same person in one photo
+        // shouldn't tag it twice.
+        var unique = ids.filter(function (v, i) { return ids.indexOf(v) === i; });
+        return savePeopleTags(item.record, item.fileKey, item.metaJson, unique);
+      }).catch(function () { /* skip this item, keep the scan going */ })
+        .then(function () {
+          done++;
+          if (done % 10 === 0) savePeopleRegistry(); // checkpoint, so a closed tab doesn't lose the whole run
+          return new Promise(function (r) { setTimeout(r, 0); }).then(step); // yield to the UI between items
+        });
+    }
+    return step();
+  }).catch(function (err) {
+    console.error("[ghostdrive] face scan failed:", err);
+    status("Couldn't finish: " + friendlyError(err));
+  }).then(function () {
+    peopleScanRunning = false;
+  });
+}
+
+/* ---- People panel UI ---- */
+function personDisplayName(person) { return person.name || "Unnamed person"; }
+
+function renderPeopleList() {
+  var host = $("#people-list");
+  if (!host) return;
+  var reg = getPeopleRegistry();
+  var ids = Object.keys(reg.people).sort(function (a, b) {
+    return (reg.people[b].count || 0) - (reg.people[a].count || 0);
+  });
+  host.innerHTML = "";
+  if (!ids.length) {
+    host.innerHTML = '<p class="hint">No faces grouped yet. Run a scan and they\'ll show up here.</p>';
+    return;
+  }
+  ids.forEach(function (pid) {
+    var person = reg.people[pid];
+    var card = document.createElement("div");
+    card.className = "person-card";
+
+    var img = document.createElement("img");
+    img.alt = personDisplayName(person);
+    img.title = "Show everything with this person";
+    card.appendChild(img);
+    if (person.sampleItemId) {
+      sb.from("objects").select("*").eq("id", person.sampleItemId).maybeSingle().then(function (res) {
+        if (!res.data) return;
+        loadObjectMeta(res.data); // warms the file key loadThumbnail needs
+        return loadThumbnail(res.data).then(function (url) { if (url) img.src = url; });
+      }).catch(function () {});
+    }
+    img.addEventListener("click", function () {
+      currentPerson = pid;
+      $("#person-select").value = pid;
+      hideModal("#people-modal");
+      refreshGallery();
+    });
+
+    var nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = person.name || "";
+    nameInput.placeholder = "Add a name";
+    nameInput.addEventListener("change", function () {
+      person.name = nameInput.value.trim();
+      savePeopleRegistry();
+      renderPersonOptions();
+    });
+    card.appendChild(nameInput);
+
+    var count = document.createElement("div");
+    count.className = "person-count";
+    count.textContent = (person.count || 0) + (person.count === 1 ? " face" : " faces");
+    card.appendChild(count);
+
+    host.appendChild(card);
+  });
+}
+
+function renderPersonOptions() {
+  var select = $("#person-select");
+  if (!select) return;
+  var reg = getPeopleRegistry();
+  var ids = Object.keys(reg.people).sort(function (a, b) {
+    return (reg.people[b].count || 0) - (reg.people[a].count || 0);
+  });
+  select.innerHTML = "";
+  var all = document.createElement("option");
+  all.value = ""; all.textContent = "Everyone";
+  select.appendChild(all);
+  ids.forEach(function (pid) {
+    var opt = document.createElement("option");
+    opt.value = pid;
+    opt.textContent = personDisplayName(reg.people[pid]);
+    select.appendChild(opt);
+  });
+  select.value = currentPerson || "";
+}
+
+var currentPerson = "";
+$("#person-select").addEventListener("change", function (e) { currentPerson = e.target.value; refreshGallery(); });
+$("#btn-open-people").addEventListener("click", function () {
+  renderPeopleList();
+  showModal("#people-modal");
+});
+$("#btn-people-close").addEventListener("click", function () { hideModal("#people-modal"); });
+$("#people-modal .modal-backdrop").addEventListener("click", function () { hideModal("#people-modal"); });
+$("#btn-people-scan").addEventListener("click", function () { scanLibraryForFaces(false); });
+$("#btn-people-rescan").addEventListener("click", function () { scanLibraryForFaces(true); });
+
+/* ---- Person affinity: the people half of the feed's ranking ----
+   A person's affinity is just the average engagement of the items they
+   appear in -- watch them through, they score high; skip or downvote them,
+   they score low. That number then nudges every *other* item featuring
+   that person, which is what makes the feed feel like it noticed who you
+   care about rather than only which individual clips you replayed. */
+var PERSON_AFFINITY_WEIGHT = 0.8;
+var PERSON_AFFINITY_MIN_ITEMS = 2; // one watched clip isn't a preference yet
+var personAffinity = new Map(); // personId -> bonus added to an item's score
+
+function computePersonAffinities() {
+  personAffinity = new Map();
+  var totals = new Map(); // personId -> { sum, n }
+  reelsState.records.forEach(function (record, id) {
+    var loaded;
+    try { loaded = loadObjectMeta(record); } catch (e) { return; }
+    var people = loaded.metaJson.people;
+    if (!people || !people.length) return;
+    var doc = loadEngagementDoc(record, loaded.fileKey);
+    if (!doc || !(doc.plays > 0)) return; // never opened -- says nothing either way
+    var duration = record.kind === "photo" ? REELS_PHOTO_SECONDS : (loaded.metaJson.duration || 0);
+    var score = engagementScore(doc, duration, 0);
+    people.forEach(function (pid) {
+      var t = totals.get(pid) || { sum: 0, n: 0 };
+      t.sum += score; t.n++;
+      totals.set(pid, t);
+    });
+  });
+  totals.forEach(function (t, pid) {
+    if (t.n < PERSON_AFFINITY_MIN_ITEMS) return;
+    // engagementScore returns 1 for "seen but unremarkable", so the
+    // baseline to measure against is 1: above it means more of this
+    // person, below it means less.
+    var bonus = (t.sum / t.n - 1) * PERSON_AFFINITY_WEIGHT;
+    personAffinity.set(pid, Math.max(-1.5, Math.min(2, bonus)));
+  });
+}
+
+function personAffinityForItem(loaded) {
+  if (!loaded || !loaded.metaJson || !loaded.metaJson.people) return 0;
+  var best = 0;
+  loaded.metaJson.people.forEach(function (pid) {
+    var bonus = personAffinity.get(pid);
+    if (bonus === undefined) return;
+    // Strongest feeling wins rather than averaging: a photo of someone you
+    // love and someone you're indifferent to is still one you want to see.
+    if (Math.abs(bonus) > Math.abs(best)) best = bonus;
+  });
+  return best;
+}
+
 var reelsState = {
   order: [], originalOrder: [], records: new Map(),
   index: 0, shuffled: false, muted: true,
@@ -5309,12 +6002,33 @@ function reelsClearCache() {
   reelsState.cacheOrder = [];
 }
 
-function loadReelVideo(id, onProgress) {
+function loadReelMedia(id, onProgress) {
   var cached = reelsCacheGet(id);
   if (cached) return Promise.resolve(cached.url);
   var record = reelsState.records.get(id);
-  if (!record) return Promise.reject(new Error("Video not found."));
+  if (!record) return Promise.reject(new Error("This item is no longer in the feed."));
   var loaded = loadObjectMeta(record); // also warms state.fileKeyCache
+
+  // Photos: no streaming/decode pipeline to worry about, so the only
+  // question is whether the bytes need decrypting first. Either way the
+  // engagement doc is prepared without bytes -- highlight markers are a
+  // video concept, and a photo's stats (dwell, votes, completions) don't
+  // need the file to be analyzed.
+  if (record.kind === "photo") {
+    if (loaded.metaJson.contentEncrypted === false) {
+      var photoUrl = withStreamType(R2_WORKER_URL + "/object?path=" + encodeURIComponent(record.content_path)
+        + "&auth=" + encodeURIComponent(R2_AUTH_SECRET), streamMediaType(loaded.metaJson));
+      if (onProgress) onProgress(1, 1);
+      reelsPrepareEngagement(id, record, loaded.fileKey, null, loaded.metaJson.mime);
+      return Promise.resolve(photoUrl);
+    }
+    return downloadObjectContent(record, loaded.fileKey, loaded.metaJson, onProgress).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      reelsCacheSet(id, { url: url });
+      reelsPrepareEngagement(id, record, loaded.fileKey, null, loaded.metaJson.mime);
+      return url;
+    });
+  }
 
   // Unencrypted video (everything uploaded since encryption was turned off)
   // gets handed to the player as a plain URL, so the browser streams it
@@ -5331,7 +6045,7 @@ function loadReelVideo(id, onProgress) {
     // seeded from the decoded bytes; with streaming there are no bytes in
     // hand, so it's prepared without them and falls back to its own
     // deterministic estimate until real viewing data accumulates.
-    reelsPrepareEngagement(id, record, loaded.fileKey, null);
+    reelsPrepareEngagement(id, record, loaded.fileKey, null, loaded.metaJson.mime);
     return Promise.resolve(streamUrl);
   }
 
@@ -5339,7 +6053,7 @@ function loadReelVideo(id, onProgress) {
     var url = URL.createObjectURL(blob);
     reelsCacheSet(id, { url: url });
     return blob.arrayBuffer().then(function (buf) {
-      reelsPrepareEngagement(id, record, loaded.fileKey, new Uint8Array(buf));
+      reelsPrepareEngagement(id, record, loaded.fileKey, new Uint8Array(buf), loaded.metaJson.mime);
       return url;
     });
   });
@@ -5358,7 +6072,10 @@ var REELS_PREWARM_COUNT = 2;
 var reelsPrewarmPromise = null;
 
 function loadReelsIndex() {
-  return sb.from("objects").select("*").eq("user_id", state.userId).eq("kind", "video").then(function (res) {
+  // Photos ride in the same feed as videos -- one shuffled stream of
+  // everything, ranked by the same engagement math, rather than two
+  // separate feeds that each know only half of what you actually watch.
+  return sb.from("objects").select("*").eq("user_id", state.userId).in("kind", ["video", "photo"]).then(function (res) {
     if (res.error) throw res.error;
     var recordsById = new Map();
     var items = (res.data || []).map(function (record) {
@@ -5371,6 +6088,7 @@ function loadReelsIndex() {
 
     reelsState.records = recordsById;
     reelsState.originalOrder = order;
+    computePersonAffinities(); // must precede the weighted shuffle below -- it reads this
     // Opens shuffled by default, TikTok/IG-style -- shuffle can still be
     // switched off with the shuffle button, same toggle as before.
     reelsState.order = weightedShuffleByEngagement(order);
@@ -5387,7 +6105,7 @@ function prewarmReels() {
   if (reelsPrewarmPromise) return reelsPrewarmPromise;
   reelsPrewarmPromise = loadReelsIndex().then(function (order) {
     order.slice(0, REELS_PREWARM_COUNT).forEach(function (id) {
-      loadReelVideo(id).catch(function () {}); // fills the same cache showReelAt() reads from
+      loadReelMedia(id).catch(function () {}); // fills the same cache showReelAt() reads from
     });
     return order;
   }).catch(function (err) {
@@ -5407,7 +6125,10 @@ function openReels() {
     $("#btn-reels-shuffle").classList.add("active");
     showModal("#reels-modal");
     $("#reels-empty").classList.toggle("hidden", order.length > 0);
-    $("#reels-video").classList.toggle("hidden", order.length === 0);
+    if (!order.length) {
+      $("#reels-video").classList.add("hidden");
+      $("#reels-photo").classList.add("hidden");
+    }
     if (!order.length) { $("#reels-info").textContent = ""; return; }
     showReelAt(0);
   }).catch(function (err) {
@@ -5424,6 +6145,63 @@ function reelInfoText(id) {
   return bits.join(" · ");
 }
 
+/* ---------------- Photos in the feed ----------------
+   A video paces itself; a photo has to be given a clock. This is that
+   clock: a fixed dwell window that drives the same progress bar a video's
+   playhead drives, and that feeds the same engagement stats (dwell time,
+   completions) the ranking math reads -- so "I lingered on this" and "I
+   swiped past this instantly" mean the same thing for a photo as watching
+   or skipping means for a video. It loops rather than auto-advancing,
+   matching how videos in this feed behave (they're set to loop, and only a
+   swipe moves the feed on). */
+var REELS_PHOTO_SECONDS = 6;
+var reelsPhoto = { id: null, elapsed: 0, paused: false, timer: null, lastAt: 0 };
+
+function reelRecordKind(id) {
+  var record = reelsState.records.get(id);
+  return record ? record.kind : null;
+}
+function currentReelIsPhoto() { return reelRecordKind(reelsState.order[reelsState.index]) === "photo"; }
+
+function reelsStopPhotoTimer() {
+  if (reelsPhoto.timer) clearInterval(reelsPhoto.timer);
+  reelsPhoto = { id: null, elapsed: 0, paused: false, timer: null, lastAt: 0 };
+}
+function recordReelPhotoWatch(id, delta) {
+  var entry = reelsState.engagement.get(id);
+  if (!entry) return; // doc not ready yet -- a second of dwell isn't worth blocking on
+  entry.doc.watchSeconds = (entry.doc.watchSeconds || 0) + delta;
+  entry.dirty = true;
+  scheduleEngagementSave(id);
+}
+function reelsStartPhotoTimer(id) {
+  reelsStopPhotoTimer();
+  reelsPhoto.id = id;
+  reelsPhoto.lastAt = Date.now();
+  reelsPhoto.timer = setInterval(function () {
+    if (reelsPhoto.id !== id) return;
+    var now = Date.now();
+    if (reelsPhoto.paused) { reelsPhoto.lastAt = now; return; }
+    // Clamped: a backgrounded tab (or a sleeping laptop) must not bank
+    // minutes of "watch time" the moment it wakes up and this fires again.
+    var delta = Math.min(1.5, (now - reelsPhoto.lastAt) / 1000);
+    reelsPhoto.lastAt = now;
+    reelsPhoto.elapsed += delta;
+    recordReelPhotoWatch(id, delta);
+    if (reelsPhoto.elapsed >= REELS_PHOTO_SECONDS) {
+      recordReelCompletion(id);
+      reelsPhoto.elapsed = 0;
+    }
+    reelsUpdateSeekUI(reelsPhoto.elapsed / REELS_PHOTO_SECONDS, reelsPhoto.elapsed, REELS_PHOTO_SECONDS);
+  }, 200);
+}
+function reelsPausePhotoTimer() { if (reelsPhoto.id) reelsPhoto.paused = true; }
+function reelsResumePhotoTimer() {
+  if (!reelsPhoto.id) return;
+  reelsPhoto.paused = false;
+  reelsPhoto.lastAt = Date.now();
+}
+
 function showReelAt(i) {
   var order = reelsState.order;
   if (!order.length) return;
@@ -5434,30 +6212,54 @@ function showReelAt(i) {
   var myToken = reelsState.loadToken;
   var id = order[i];
 
+  var isPhoto = reelRecordKind(id) === "photo";
   var video = $("#reels-video");
+  var photo = $("#reels-photo");
   video.pause();
+  reelsStopPhotoTimer();
   video.style.transition = "none";
   video.style.transform = "translateY(0)";
+  photo.style.transition = "none";
+  photo.style.transform = "translateY(0)";
   video.playbackRate = 1;
+  video.classList.toggle("hidden", isPhoto);
+  photo.classList.toggle("hidden", !isPhoto);
+  if (isPhoto) {
+    // Fully release the previous video rather than just hiding it --
+    // otherwise its audio keeps going underneath the photo.
+    video.removeAttribute("src");
+    video.load();
+  } else {
+    photo.removeAttribute("src");
+  }
   $("#reels-2x-badge").classList.add("hidden");
-  reelsUpdateSeekUI(0, 0, 0);
+  reelsUpdateSeekUI(0, 0, isPhoto ? REELS_PHOTO_SECONDS : 0);
   renderReelsHighlights(id);
   $("#reels-info").textContent = reelInfoText(id);
   reelsState.lastTickTime = null; // don't count the jump from wherever the previous video was to 0:00 as watch time
   renderReelsVoteUI(id);
-  recordReelPlay(id);
 
   var loadingEl = $("#reels-loading");
   var loadingFill = $("#reels-loading-fill");
   loadingFill.style.width = "0%";
   loadingEl.classList.remove("hidden");
 
-  loadReelVideo(id, function (loaded, total) {
+  loadReelMedia(id, function (loaded, total) {
     if (myToken !== reelsState.loadToken) return;
     loadingFill.style.width = (total ? (loaded / total) * 100 : 0) + "%";
   }).then(function (url) {
     if (myToken !== reelsState.loadToken) return; // superseded by a later swipe
     loadingEl.classList.add("hidden");
+    // Counted here rather than at the top of showReelAt: the engagement doc
+    // is created inside loadReelMedia, so a play recorded before this point
+    // was dropped on the floor -- which left plays undercounted and made
+    // retention (watchSeconds / duration / plays) read far too high.
+    recordReelPlay(id);
+    if (isPhoto) {
+      photo.src = url;
+      reelsStartPhotoTimer(id);
+      return;
+    }
     video.src = url;
     video.muted = reelsState.muted;
     video.currentTime = 0;
@@ -5465,14 +6267,14 @@ function showReelAt(i) {
   }).catch(function (err) {
     if (myToken !== reelsState.loadToken) return;
     loadingEl.classList.add("hidden");
-    $("#reels-info").textContent = "Couldn't load this video: " + friendlyError(err);
+    $("#reels-info").textContent = "Couldn't load this one: " + friendlyError(err);
   });
 
   // Preemptive loading: warm the cache for the neighbors on either side so
   // the *next* swipe doesn't have to wait on a download + decrypt. No
   // loading bar for these -- they're silent, background prefetches.
-  loadReelVideo(order[(i + 1) % n]).catch(function () {});
-  if (n > 1) loadReelVideo(order[(i - 1 + n) % n]).catch(function () {});
+  loadReelMedia(order[(i + 1) % n]).catch(function () {});
+  if (n > 1) loadReelMedia(order[(i - 1 + n) % n]).catch(function () {});
 }
 
 function reelsNext() { showReelAt(reelsState.index + 1); }
@@ -5484,9 +6286,18 @@ function closeReels() {
   video.playbackRate = 1;
   video.removeAttribute("src");
   video.load();
+  reelsStopPhotoTimer();
+  var reelsPhotoEl = $("#reels-photo");
+  reelsPhotoEl.removeAttribute("src");
+  reelsPhotoEl.classList.add("hidden");
   hideModal("#reels-modal");
   reelsClearCache();
   flushAllPendingEngagementSaves();
+  // The staged index is torn down just below, so the prewarm promise that
+  // produced it has to go too -- openReels trusts it as "already staged"
+  // and would otherwise skip rebuilding, leaving the feed blank on every
+  // reopen until something else happened to invalidate it.
+  reelsPrewarmPromise = null;
   reelsState.order = [];
   reelsState.originalOrder = [];
   reelsState.records = new Map();
@@ -5508,13 +6319,19 @@ $("#reels-video").addEventListener("click", function () {
   var video = $("#reels-video");
   if (video.paused) video.play().catch(function () {}); else video.pause();
 });
+// Tapping a photo freezes/unfreezes its dwell clock -- the same "tap to
+// pause" the video gets, since for a photo the clock is the playback.
+$("#reels-photo").addEventListener("click", function () {
+  if (reelsSuppressNextClick) { reelsSuppressNextClick = false; return; }
+  if (reelsPhoto.paused) reelsResumePhotoTimer(); else reelsPausePhotoTimer();
+});
 
 $("#btn-reels-mute").addEventListener("click", function () {
   reelsState.muted = !reelsState.muted;
   $("#reels-video").muted = reelsState.muted;
   $("#btn-reels-mute").innerHTML = reelsState.muted
-    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>'
-    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18 6a9 9 0 0 1 0 12"/></svg>';
+    ? '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>'
+    : '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18 6a9 9 0 0 1 0 12"/></svg>';
   $("#btn-reels-mute").classList.toggle("active", !reelsState.muted);
 });
 
@@ -5552,17 +6369,24 @@ var REELS_HOLD_SPEED = 2;
 var reelsPointer = null; // { id, startX, startY, lastY, moved, lastT, velocity, holding, holdTimer }
 
 function reelsSetDragTransform(px, animate) {
-  var video = $("#reels-video");
-  video.style.transition = animate ? "transform " + REELS_FLY_MS + "ms cubic-bezier(.2,.7,.3,1)" : "none";
-  video.style.transform = "translateY(" + px + "px)";
+  // Applied to both media elements: only one is visible at a time, and
+  // driving both keeps a swipe identical whichever kind is on screen.
+  [$("#reels-video"), $("#reels-photo")].forEach(function (el) {
+    el.style.transition = animate ? "transform " + REELS_FLY_MS + "ms cubic-bezier(.2,.7,.3,1)" : "none";
+    el.style.transform = "translateY(" + px + "px)";
+  });
 }
 function reelsResetDragTransform() { reelsSetDragTransform(0, true); }
 
 function reelsEngageHoldSpeed() {
+  // Holding a video speeds it up; holding a photo holds it -- pausing the
+  // dwell clock so it stays put for as long as you keep your finger down.
+  if (currentReelIsPhoto()) { reelsPausePhotoTimer(); return; }
   $("#reels-video").playbackRate = REELS_HOLD_SPEED;
   $("#reels-2x-badge").classList.remove("hidden");
 }
 function reelsDisengageHoldSpeed() {
+  if (currentReelIsPhoto()) { reelsResumePhotoTimer(); return; }
   $("#reels-video").playbackRate = 1;
   $("#reels-2x-badge").classList.add("hidden");
 }
@@ -5619,9 +6443,9 @@ function reelsEndPointer() {
   // Commit: finish flying the video off-screen in the swipe direction --
   // TikTok-style -- *then* swap to the next/previous one once it's
   // actually gone, instead of the swap cutting the fly-away short.
-  var video = $("#reels-video");
+  var flyEl = currentReelIsPhoto() ? $("#reels-photo") : $("#reels-video");
   var goingNext = dy < 0;
-  var flyPx = (video.clientHeight || window.innerHeight || 800) * (goingNext ? -1 : 1);
+  var flyPx = (flyEl.clientHeight || window.innerHeight || 800) * (goingNext ? -1 : 1);
   reelsSetDragTransform(flyPx, true);
   setTimeout(function () { if (goingNext) reelsNext(); else reelsPrev(); }, REELS_FLY_MS);
 }
@@ -5675,6 +6499,15 @@ $("#reels-video").addEventListener("timeupdate", function () {
   if (reelsSeekDrag) return; // don't fight the user's drag with playback updates
   var video = $("#reels-video");
   if (!video.duration) return;
+  // Videos in this feed loop, and a looping <video> never fires "ended" --
+  // so a completion has to be spotted as the playhead wrapping around from
+  // near the end back to the start. Without this, completions stayed at
+  // zero forever and the ranking below was quietly running on one signal
+  // fewer than it thought it had.
+  var prev = reelsState.lastTickTime;
+  if (prev !== null && prev > video.duration - 1.5 && video.currentTime < prev - 0.5) {
+    recordReelCompletion(reelsState.order[reelsState.index]);
+  }
   reelsUpdateSeekUI(video.currentTime / video.duration, video.currentTime, video.duration);
   recordReelWatchTick(video.currentTime);
 });
@@ -5682,10 +6515,9 @@ $("#reels-video").addEventListener("seeked", function () {
   if (reelsSeekDrag) reelsDrawScrubFrame();
   reelsState.lastTickTime = null; // a seek isn't watched time -- don't count the jump
 });
-$("#reels-video").addEventListener("ended", function () {
-  recordReelCompletion(reelsState.order[reelsState.index]);
-  reelsNext(); // TikTok-style auto-advance once a video finishes on its own
-});
+// No "ended" listener here on purpose: the element is set to loop, and a
+// looping <video> never fires it. Completions are detected as the playhead
+// wrapping around, in the timeupdate handler above.
 
 var reelsSeekDrag = null; // { pointerId, wasPlaying }
 function reelsSeekFraction(clientX) {
@@ -5693,6 +6525,7 @@ function reelsSeekFraction(clientX) {
   return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
 }
 function reelsSeekTo(clientX) {
+  if (currentReelIsPhoto()) return; // a photo's progress bar is a countdown, not a timeline
   var video = $("#reels-video");
   if (!video.duration) return;
   var frac = reelsSeekFraction(clientX);
@@ -5701,6 +6534,7 @@ function reelsSeekTo(clientX) {
   reelsShowScrubPreview(frac);
 }
 $("#reels-seekbar-track").addEventListener("pointerdown", function (e) {
+  if (currentReelIsPhoto()) return;
   var video = $("#reels-video");
   if (!video.duration) return;
   reelsSeekDrag = { pointerId: e.pointerId, wasPlaying: !video.paused };
@@ -5754,6 +6588,11 @@ function bindSeekTickClick(tick) {
    with no visible transition. */
 var REELS_HL_BUCKETS = 10;
 var REELS_HL_MIN_REAL_SEEKS = 6;
+// Aggregate dwell time (seconds, summed across every position bucket) before
+// per-position watch data is trusted enough to place markers on its own.
+// Deliberately low: 20s of real playback on one video is already a far
+// better read on which parts matter than any guess made from the file.
+var REELS_HL_MIN_WATCH_SECONDS = 20;
 var REELS_HL_MAX_MARKERS = 3;
 var reelsEngagementSaveTimers = new Map();
 
@@ -5778,6 +6617,12 @@ function blankEngagementDoc() {
     watchSeconds: 0,    // cumulative forward-playback time across all views
     plays: 0,           // number of times this video was opened in Reels
     completions: 0,     // number of times playback reached the end
+    // Per-position dwell time (seconds actually watched, bucketed by where
+    // in the video they were watched) -- see recordReelWatchTick. A much
+    // denser "what do people actually linger on" signal than seek landings
+    // (counts, above) alone, since it accumulates from ordinary playback
+    // instead of requiring a deliberate scrub.
+    watchTicks: new Array(REELS_HL_BUCKETS).fill(0),
   };
 }
 
@@ -5807,6 +6652,127 @@ function energyPeakBuckets(audioBuffer, bucketCount) {
   } catch (e) { return null; }
 }
 
+// Downscaled grayscale sampling used to compare frames cheaply -- a couple
+// hundred numbers per frame is plenty to notice "this looks like a
+// different shot now" without the cost of diffing full-resolution frames.
+var SCENE_SAMPLE_W = 24, SCENE_SAMPLE_H = 14;
+function sampleFrameLuma(video, ctx) {
+  ctx.drawImage(video, 0, 0, SCENE_SAMPLE_W, SCENE_SAMPLE_H);
+  var data = ctx.getImageData(0, 0, SCENE_SAMPLE_W, SCENE_SAMPLE_H).data;
+  var out = new Float32Array(SCENE_SAMPLE_W * SCENE_SAMPLE_H);
+  for (var i = 0, p = 0; i < data.length; i += 4, p++) {
+    out[p] = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+  }
+  return out;
+}
+function frameLumaDelta(a, b) {
+  var sum = 0;
+  for (var i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  return sum / a.length / 255; // normalized 0..1
+}
+
+// Samples one frame from the middle of each bucket and compares it to the
+// previous bucket's frame -- a bucket whose frame looks very different from
+// the one before it is a scene cut or a hard visual transition, which is
+// usually exactly the kind of moment worth landing a viewer on ("transition
+// points"). This never touches the actual #reels-video that's on screen --
+// it decodes into a separate, offscreen, muted video element, so scanning
+// for transitions never interrupts or visibly seeks the one playing.
+// Resolves an array of bucket indices, or null if there's nothing usable
+// (no video track, a single static shot, decode failure, or it ran long).
+function sceneChangeBuckets(blob, bucketCount) {
+  return new Promise(function (resolve) {
+    if (!blob) { resolve(null); return; }
+    var settled = false;
+    var url = null;
+    var video = document.createElement("video");
+    video.muted = true; video.playsInline = true; video.preload = "auto";
+    var canvas = document.createElement("canvas");
+    canvas.width = SCENE_SAMPLE_W; canvas.height = SCENE_SAMPLE_H;
+    var ctx;
+    try { ctx = canvas.getContext("2d", { willReadFrequently: true }); } catch (e) { ctx = canvas.getContext("2d"); }
+    function cleanup() {
+      try { video.pause(); } catch (e) {}
+      try { video.removeAttribute("src"); video.load(); } catch (e) {}
+      if (url) try { URL.revokeObjectURL(url); } catch (e) {}
+    }
+    function done(result) { if (settled) return; settled = true; clearTimeout(overallTimer); cleanup(); resolve(result); }
+    var overallTimer = setTimeout(function () { done(null); }, 6000);
+    if (!ctx) { done(null); return; }
+    video.addEventListener("error", function () { done(null); });
+    video.addEventListener("loadedmetadata", function () {
+      var duration = video.duration;
+      if (!isFinite(duration) || duration <= 0) { done(null); return; }
+      var frames = [];
+      var i = 0;
+      function nextBucket() {
+        if (settled) return; // the overall timeout already gave up on this
+        if (i >= bucketCount) {
+          var scores = [];
+          for (var b = 1; b < frames.length; b++) {
+            scores.push((frames[b] && frames[b - 1]) ? frameLumaDelta(frames[b], frames[b - 1]) : 0);
+          }
+          // scores[k] is the jump INTO bucket (k+1) -- attribute it there.
+          var ranked = scores.map(function (s, idx) { return { i: idx + 1, s: s }; })
+            .sort(function (a, b2) { return b2.s - a.s; });
+          if (!ranked[0] || ranked[0].s < 0.02) { done(null); return; } // too static for this signal to mean anything
+          var pickCount = bucketCount <= 4 ? 1 : 2;
+          done(ranked.slice(0, pickCount).map(function (x) { return x.i; }).sort(function (a, b2) { return a - b2; }));
+          return;
+        }
+        var t = Math.min(Math.max(0, duration - 0.05), ((i + 0.5) / bucketCount) * duration);
+        // The listener has to be torn down on EVERY exit from this step, not
+        // just the happy one. A seek slower than the timeout (routine in
+        // Safari on a big blob URL) would otherwise leave it armed: when the
+        // seek finally lands it advances the walk a second time, so two
+        // chains run at once, frames land in the wrong buckets, and the
+        // offscreen video keeps seeking after this has already finished.
+        var seekTimer = null;
+        function onSeeked() {
+          video.removeEventListener("seeked", onSeeked);
+          clearTimeout(seekTimer);
+          try { frames.push(sampleFrameLuma(video, ctx)); } catch (e) { frames.push(null); }
+          i++;
+          nextBucket();
+        }
+        function giveUpOnThisBucket() {
+          video.removeEventListener("seeked", onSeeked);
+          clearTimeout(seekTimer);
+          frames.push(null);
+          i++;
+          nextBucket();
+        }
+        seekTimer = setTimeout(giveUpOnThisBucket, 1200);
+        video.addEventListener("seeked", onSeeked);
+        try { video.currentTime = t; } catch (e) { giveUpOnThisBucket(); }
+      }
+      nextBucket();
+    });
+    url = URL.createObjectURL(blob);
+    video.src = url;
+  });
+}
+
+// Blends the audio-energy guess and the scene-cut guess into one pick.
+// Buckets both signals agree on are the strongest possible guess (a loud,
+// visually-different moment); short of that, scene cuts are weighted first
+// since "the shot changed" is a more specific signal than "it got louder"
+// (which can just mean someone started talking).
+function mergePredictedBuckets(audioBuckets, sceneBuckets, bucketCount) {
+  var pickCount = bucketCount <= 4 ? 1 : 2;
+  if (!audioBuckets && !sceneBuckets) return null;
+  if (!audioBuckets) return { buckets: sceneBuckets, source: "scene" };
+  if (!sceneBuckets) return { buckets: audioBuckets, source: "audio" };
+  var overlap = audioBuckets.filter(function (b) { return sceneBuckets.indexOf(b) !== -1; });
+  var merged = overlap.slice(0, pickCount);
+  if (merged.length < pickCount) {
+    sceneBuckets.concat(audioBuckets).forEach(function (b) {
+      if (merged.length < pickCount && merged.indexOf(b) === -1) merged.push(b);
+    });
+  }
+  return { buckets: merged.sort(function (a, b) { return a - b; }), source: "audio+scene" };
+}
+
 // When there's no audio track (or it fails to decode), fall back to a
 // stable, deterministic pick from the video's own id, biased toward the
 // middle stretch -- so the same video always lands on the same guess
@@ -5824,46 +6790,71 @@ function fallbackPredictedHighlights(id, bucketCount) {
   return { buckets: picks.sort(function (a, b) { return a - b; }), source: "estimate" };
 }
 
-function computePredictedHighlights(id, plainBytes, bucketCount) {
+function computePredictedHighlights(id, plainBytes, mime, bucketCount) {
   return new Promise(function (resolve) {
     var settled = false;
     function done(result) { if (!settled) { settled = true; resolve(result); } }
-    var giveUpTimer = setTimeout(function () { done(fallbackPredictedHighlights(id, bucketCount)); }, 4000);
-    try {
-      var AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) { clearTimeout(giveUpTimer); done(fallbackPredictedHighlights(id, bucketCount)); return; }
-      var ctx = new AC();
-      var closed = false;
-      function safeClose() {
-        if (closed) return; // decodeAudioData's callback-style and promise-style args both fire in
-        closed = true;      // some browsers -- closing an already-closed AudioContext rejects (it
-        try {                // doesn't throw), so an unguarded second call surfaces as a page error.
-          var p = ctx.close();
-          if (p && p.catch) p.catch(function () {});
-        } catch (e) {}
-      }
-      var copy = plainBytes.slice().buffer; // decodeAudioData consumes/detaches its input buffer
-      var onOk = function (audioBuffer) {
-        clearTimeout(giveUpTimer);
-        var buckets = energyPeakBuckets(audioBuffer, bucketCount);
-        safeClose();
-        done(buckets ? { buckets: buckets, source: "audio" } : fallbackPredictedHighlights(id, bucketCount));
-      };
-      var onErr = function () {
-        clearTimeout(giveUpTimer);
-        safeClose();
-        done(fallbackPredictedHighlights(id, bucketCount));
-      };
-      var maybePromise = ctx.decodeAudioData(copy, onOk, onErr);
-      if (maybePromise && maybePromise.then) maybePromise.then(onOk, onErr);
-    } catch (e) {
+    // Hard ceiling on the whole analysis. Both signals below bound
+    // themselves too, but this guarantees a marker set exists in bounded
+    // time no matter how a browser behaves -- markers are a nicety, and
+    // nothing in the player is allowed to wait on them.
+    // Held so the timeout below can close the AudioContext itself: Safari
+    // can leave decodeAudioData hanging on an audio track it won't touch,
+    // which would otherwise strand a live context per video until the
+    // browser's concurrent-context limit stops the loudness signal working
+    // at all for the rest of the session.
+    var closeAudioContext = null;
+    var giveUpTimer = setTimeout(function () {
+      if (closeAudioContext) closeAudioContext();
+      done(fallbackPredictedHighlights(id, bucketCount));
+    }, 7000);
+
+    // Signal 1: loudness peaks. Resolves null (rather than falling straight
+    // back to the deterministic estimate) so it can be merged with signal 2.
+    var audioPromise = new Promise(function (resolveAudio) {
+      try {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) { resolveAudio(null); return; }
+        var ctx = new AC();
+        var closed = false;
+        function safeClose() {
+          if (closed) return; // decodeAudioData's callback-style and promise-style args both fire in
+          closed = true;      // some browsers -- closing an already-closed AudioContext rejects (it
+          try {                // doesn't throw), so an unguarded second call surfaces as a page error.
+            var p = ctx.close();
+            if (p && p.catch) p.catch(function () {});
+          } catch (e) {}
+        }
+        closeAudioContext = safeClose;
+        var copy = plainBytes.slice().buffer; // decodeAudioData consumes/detaches its input buffer
+        var onOk = function (audioBuffer) {
+          var buckets = energyPeakBuckets(audioBuffer, bucketCount);
+          safeClose();
+          resolveAudio(buckets);
+        };
+        var onErr = function () { safeClose(); resolveAudio(null); };
+        var maybePromise = ctx.decodeAudioData(copy, onOk, onErr);
+        if (maybePromise && maybePromise.then) maybePromise.then(onOk, onErr);
+      } catch (e) { resolveAudio(null); }
+    });
+
+    // Signal 2: visual scene cuts, from the same bytes.
+    var sceneBlob = null;
+    try { sceneBlob = new Blob([plainBytes], { type: mime || "video/mp4" }); } catch (e) {}
+    var scenePromise = sceneChangeBuckets(sceneBlob, bucketCount).catch(function () { return null; });
+
+    Promise.all([audioPromise, scenePromise]).then(function (results) {
+      clearTimeout(giveUpTimer);
+      var merged = mergePredictedBuckets(results[0], results[1], bucketCount);
+      done(merged || fallbackPredictedHighlights(id, bucketCount));
+    }).catch(function () {
       clearTimeout(giveUpTimer);
       done(fallbackPredictedHighlights(id, bucketCount));
-    }
+    });
   });
 }
 
-function reelsPrepareEngagement(id, record, fileKey, plainBytes) {
+function reelsPrepareEngagement(id, record, fileKey, plainBytes, mime) {
   if (reelsState.engagement.has(id)) return;
   var doc = loadEngagementDoc(record, fileKey);
   if (!doc || doc.n !== REELS_HL_BUCKETS) doc = blankEngagementDoc();
@@ -5877,7 +6868,7 @@ function reelsPrepareEngagement(id, record, fileKey, plainBytes) {
     // straight through to the deterministic per-id estimate; real seek data
     // replaces it either way once there's enough of it.
     var predicted = plainBytes
-      ? computePredictedHighlights(id, plainBytes, REELS_HL_BUCKETS)
+      ? computePredictedHighlights(id, plainBytes, mime, REELS_HL_BUCKETS)
       : Promise.resolve(fallbackPredictedHighlights(id, REELS_HL_BUCKETS));
     predicted.then(function (result) {
       var live = reelsState.engagement.get(id);
@@ -5889,19 +6880,6 @@ function reelsPrepareEngagement(id, record, fileKey, plainBytes) {
       refreshReelsHighlightsIfCurrent(id);
     });
   }
-}
-
-function recordReelsEngagementSeek(frac) {
-  var id = reelsState.order[reelsState.index];
-  var entry = id !== undefined ? reelsState.engagement.get(id) : null;
-  if (!entry) return; // engagement doc isn't ready yet -- skip rather than block the seek
-  var n = entry.doc.n;
-  var idx = Math.max(0, Math.min(n - 1, Math.floor(frac * n)));
-  entry.doc.counts[idx] = (entry.doc.counts[idx] || 0) + 1;
-  entry.doc.totalSeeks = (entry.doc.totalSeeks || 0) + 1;
-  entry.dirty = true;
-  scheduleEngagementSave(id);
-  refreshReelsHighlightsIfCurrent(id);
 }
 
 function recordReelsEngagementSeek(frac) {
@@ -5929,6 +6907,20 @@ function recordReelWatchTick(currentTime) {
   var delta = currentTime - last;
   if (delta <= 0 || delta > 1.5) return; // not forward playback, or too big a jump to be a real tick
   entry.doc.watchSeconds = (entry.doc.watchSeconds || 0) + delta;
+  // Also bucket that dwell time by *where* in the video it happened. A seek
+  // landing is a deliberate "take me here" and stays the sharper signal, but
+  // they're sparse -- this accumulates passively from ordinary playback, so
+  // the "which parts are actually worth watching" picture fills in even on
+  // videos nobody ever scrubs.
+  var reelsVideoEl = $("#reels-video");
+  var tickDuration = reelsVideoEl && isFinite(reelsVideoEl.duration) ? reelsVideoEl.duration : 0;
+  if (tickDuration > 0) {
+    if (!entry.doc.watchTicks || entry.doc.watchTicks.length !== entry.doc.n) {
+      entry.doc.watchTicks = new Array(entry.doc.n).fill(0); // doc predates per-position tracking
+    }
+    var tickIdx = Math.max(0, Math.min(entry.doc.n - 1, Math.floor((currentTime / tickDuration) * entry.doc.n)));
+    entry.doc.watchTicks[tickIdx] = (entry.doc.watchTicks[tickIdx] || 0) + delta;
+  }
   entry.dirty = true;
   scheduleEngagementSave(id);
 }
@@ -5982,13 +6974,23 @@ $("#btn-reels-downvote").addEventListener("click", function () {
 //   - vote: an explicit, deliberate override in either direction
 // The result only ever influences the shuffle order of your own vault --
 // nothing here is visible as a number anywhere in the UI.
-function engagementScore(doc, durationSec) {
+function engagementScore(doc, durationSec, personBoost) {
   var plays = doc.plays || 0;
   var retention = (plays > 0 && durationSec > 0) ? Math.min(1, (doc.watchSeconds || 0) / (durationSec * plays)) : 0;
   var completionRate = plays > 0 ? Math.min(1, (doc.completions || 0) / plays) : 0;
   var voteBonus = doc.vote === "up" ? 2 : doc.vote === "down" ? -3 : 0;
-  var base = plays > 0 ? (retention * 2 + completionRate * 1.5) : 1; // unseen videos start neutral, not penalized
-  return Math.max(0.05, base + voteBonus); // floor above zero so a downvote makes something rare, not literally unreachable
+  // With no duration recorded (a thumbnail that failed at upload leaves it
+  // null), retention can't be computed -- so it's left out of the blend
+  // instead of counting as zero, which would rank the item below something
+  // never opened at all and drag down the affinity of everyone in it.
+  var base;
+  if (plays <= 0) base = 1; // unseen items start neutral, not penalized
+  else if (durationSec > 0) base = retention * 2 + completionRate * 1.5;
+  else base = 1 + completionRate * 1.5;
+  // Who's in it, weighted by how you treat that person's other items --
+  // see computePersonAffinities. Zero when faces haven't been grouped, so
+  // this term simply doesn't exist until there's something to say.
+  return Math.max(0.05, base + voteBonus + (personBoost || 0)); // floor above zero so a downvote makes something rare, not literally unreachable
 }
 
 // A weighted shuffle rather than a uniform one: each pass picks a random
@@ -6001,8 +7003,13 @@ function weightedShuffleByEngagement(ids) {
     var record = reelsState.records.get(id);
     var loaded = record ? loadObjectMeta(record) : null;
     var doc = loaded ? (loadEngagementDoc(record, loaded.fileKey) || blankEngagementDoc()) : blankEngagementDoc();
-    var duration = (loaded && loaded.metaJson.duration) || 0;
-    return { id: id, weight: engagementScore(doc, duration) };
+    // A photo has no duration of its own, so its dwell window stands in for
+    // one -- that way "watched most of it" means the same thing for both
+    // kinds and they can be ranked against each other on one scale.
+    var duration = (record && record.kind === "photo")
+      ? REELS_PHOTO_SECONDS
+      : ((loaded && loaded.metaJson.duration) || 0);
+    return { id: id, weight: engagementScore(doc, duration, personAffinityForItem(loaded)) };
   });
   var out = [];
   while (pool.length) {
@@ -6039,12 +7046,26 @@ function flushAllPendingEngagementSaves() {
 }
 
 function activeHighlightBuckets(doc) {
-  if ((doc.totalSeeks || 0) >= REELS_HL_MIN_REAL_SEEKS) {
-    var ranked = doc.counts
-      .map(function (c, i) { return { i: i, c: c }; })
-      .filter(function (x) { return x.c > 0; })
-      .sort(function (a, b) { return b.c - a.c; });
-    return ranked.slice(0, REELS_HL_MAX_MARKERS).map(function (x) { return x.i; }).sort(function (a, b) { return a - b; });
+  var watchTicks = (doc.watchTicks && doc.watchTicks.length === doc.n) ? doc.watchTicks : null;
+  var totalWatch = watchTicks ? watchTicks.reduce(function (s, v) { return s + (v || 0); }, 0) : 0;
+  var haveSeeks = (doc.totalSeeks || 0) >= REELS_HL_MIN_REAL_SEEKS;
+  var haveWatch = totalWatch >= REELS_HL_MIN_WATCH_SECONDS;
+  if (haveSeeks || haveWatch) {
+    // Each signal is normalized against its own peak before they're added,
+    // so one doesn't drown the other out purely because its raw numbers are
+    // bigger (dwell is measured in seconds, seeks in whole landings). A
+    // bucket that people both jump straight to AND linger on scores on both
+    // halves, which is exactly the "this is the good part" case.
+    var maxCount = Math.max(1, Math.max.apply(null, doc.counts));
+    var maxWatch = watchTicks ? Math.max(1, Math.max.apply(null, watchTicks)) : 1;
+    var scored = doc.counts.map(function (c, i) {
+      var seekScore = haveSeeks ? (c || 0) / maxCount : 0;
+      var watchScore = (haveWatch && watchTicks) ? (watchTicks[i] || 0) / maxWatch : 0;
+      return { i: i, s: seekScore + watchScore };
+    }).filter(function (x) { return x.s > 0; }).sort(function (a, b) { return b.s - a.s; });
+    if (scored.length) {
+      return scored.slice(0, REELS_HL_MAX_MARKERS).map(function (x) { return x.i; }).sort(function (a, b) { return a - b; });
+    }
   }
   return (doc.predicted || []).slice(0, REELS_HL_MAX_MARKERS);
 }
@@ -6056,6 +7077,7 @@ function refreshReelsHighlightsIfCurrent(id) {
 function renderReelsHighlights(id) {
   var track = $("#reels-seekbar-track");
   $$(".reels-seek-tick, .reels-seek-highlight").forEach(function (el) { el.remove(); });
+  if (reelRecordKind(id) === "photo") return; // nothing to mark inside a still image
   var entry = reelsState.engagement.get(id);
   if (!entry) return;
   var n = entry.doc.n;
