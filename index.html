@@ -110,7 +110,25 @@
   .toolbar-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   #file-count { color: var(--text-dim); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
   .toolbar-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .sort-control select, .folder-control select, .type-control select, .view-control select { padding: 6px 10px; font-size: 13px; }
+  .sort-control select, .type-control select, .view-control select { padding: 6px 10px; font-size: 13px; }
+
+  /* Folder chips -- a row of pills instead of a dropdown so folders can
+     double as drag-and-drop targets (see the "Folders" JS section). */
+  .folder-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .folder-chip {
+    padding: 6px 12px; border-radius: 20px; border: 1px solid var(--line);
+    background: transparent; color: var(--text-dim); font-size: 13px; cursor: pointer;
+    white-space: nowrap; transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.08s;
+  }
+  .folder-chip:hover { border-color: var(--text-dim); color: var(--text); }
+  .folder-chip.active { background: var(--brass); border-color: var(--brass); color: #1c1406; font-weight: 600; }
+  .folder-chip.drag-over { border-color: var(--brass); background: var(--brass-tint); color: var(--brass-strong); transform: scale(1.05); }
+  .folder-chip-new { border-style: dashed; }
+  .folder-chip-new:hover { border-color: var(--brass); color: var(--brass-strong); }
+  .folder-chip-new.drag-over { border-style: solid; }
+  /* The tile actively being dragged -- lets go, visually, of the spot it's
+     leaving while it's mid-drag over a folder chip. */
+  .thumb.dragging { opacity: 0.4; }
   .tile-size-control { display: flex; align-items: center; gap: 6px; }
   .tile-size-control .tile-size-icon { font-size: 13px; color: var(--text-dim); }
   .tile-size-control input[type="range"] { width: 100px; accent-color: var(--brass); }
@@ -220,10 +238,10 @@
     border: 1px solid rgba(245,241,230,0.18);
   }
   .scroll-date-pill.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
-  .gallery { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 28px 48px; }
+  .gallery { display: flex; flex-wrap: wrap; gap: 2px; padding: 6px 28px 48px; }
   .thumb {
-    position: relative; border-radius: 6px; overflow: hidden;
-    background: var(--ink-3); border: 1px solid var(--line); cursor: pointer;
+    position: relative; border-radius: 3px; overflow: hidden;
+    background: var(--ink-3); cursor: pointer;
     /* JS (layoutJustifiedGallery) sets explicit width/height per tile once
        aspect ratios are known -- this is just a placeholder box so nothing
        collapses to zero height before that first pass runs. */
@@ -383,6 +401,16 @@
   .viewer-video-quality:disabled { opacity: 0.6; cursor: default; }
   .viewer-video-quality.hidden { display: none !important; }
   .modal-content.media-mode .viewer-video-quality { display: flex; }
+  /* Duplicate -- shown for both photos and videos, so it gets its own free
+     slot past the video-only buttons rather than sharing one of theirs. */
+  .viewer-duplicate {
+    display: none; position: absolute; top: 12px; right: 224px; z-index: 3;
+    background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
+    border-radius: 50%; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .viewer-duplicate:hover { background: var(--brass); color: #1c1406; }
+  .viewer-duplicate svg { width: 17px; height: 17px; }
+  .modal-content.media-mode .viewer-duplicate { display: flex; }
   /* The details panel stays fully hidden in video mode until the gear
      button above is clicked -- "one big screen" by default, same as
      macOS Preview, with the filename/date/folder fields just a click
@@ -456,6 +484,8 @@
     background: var(--ink-3); font-size: 13px;
   }
   .log-row.log-fail { background: var(--danger-tint); }
+  .log-row.log-skip { background: var(--ink-3); }
+  .log-row.log-skip .log-status { color: var(--text-dim); }
   .log-status { flex: none; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.03em; }
   .log-row.log-ok .log-status { color: #4f8f5c; }
   .log-row.log-fail .log-status { color: var(--danger); }
@@ -672,7 +702,7 @@
             </select>
           </div>
           <div class="folder-control">
-            <select id="folder-select" aria-label="Folder"></select>
+            <div id="folder-chips" class="folder-chips" role="tablist" aria-label="Folders"></div>
           </div>
           <div class="sort-control">
             <select id="sort-select">
@@ -733,6 +763,9 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
       <button class="viewer-video-quality hidden" id="btn-viewer-quality" title="Playback quality" aria-label="Playback quality"></button>
+      <button class="viewer-duplicate" id="btn-viewer-duplicate" title="Duplicate" aria-label="Duplicate">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      </button>
       <div id="trim-bar" class="trim-bar hidden">
         <div class="trim-bar-track">
           <div id="trim-range-fill" class="trim-range-fill"></div>
@@ -938,6 +971,15 @@ function r2PutSmall(path, bytes, signal) {
 }
 function r2Delete(path) {
   return r2Fetch("/object?path=" + encodeURIComponent(path), { method: "DELETE" });
+}
+// Used by "Duplicate": copies an object's bytes within R2 itself (see the
+// /copy route in ghostdriver2worker.js) instead of downloading the whole
+// file into this tab just to upload it right back out unchanged.
+function r2Copy(fromPath, toPath) {
+  return r2Fetch("/copy", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from: fromPath, to: toPath }),
+  });
 }
 // Multipart-uploads a File's bytes to R2, encrypting each CHUNK_PLAIN_SIZE
 // slice into its own frame as it goes -- memory stays flat regardless of
@@ -1924,6 +1966,63 @@ function isVaultOpen() {
   var el = $("#screen-vault");
   return !!el && !el.classList.contains("hidden");
 }
+// Recursively walks a dropped folder's contents. A plain drop only ever
+// hands back dataTransfer.files, which is *flat* -- a dropped directory
+// shows up there as nothing usable, not its contents. Chrome/Edge/Firefox
+// expose the real tree through dataTransfer.items[].webkitGetAsEntry(),
+// which this walks depth-first, collecting every actual file inside any
+// number of nested subfolders.
+function readAllEntries(reader) {
+  return new Promise(function (resolve, reject) {
+    var all = [];
+    function readBatch() {
+      // DirectoryReader.readEntries() only returns up to ~100 entries per
+      // call by spec -- has to be called repeatedly until it comes back
+      // empty to see everything in a large folder.
+      reader.readEntries(function (entries) {
+        if (!entries.length) { resolve(all); return; }
+        all = all.concat(entries);
+        readBatch();
+      }, reject);
+    }
+    readBatch();
+  });
+}
+function collectFilesFromEntry(entry, files) {
+  if (!entry) return Promise.resolve();
+  if (entry.isFile) {
+    return new Promise(function (resolve) {
+      entry.file(function (file) { files.push(file); resolve(); }, function () { resolve(); });
+    });
+  }
+  if (entry.isDirectory) {
+    return readAllEntries(entry.createReader()).then(function (children) {
+      return children.reduce(function (p, child) {
+        return p.then(function () { return collectFilesFromEntry(child, files); });
+      }, Promise.resolve());
+    });
+  }
+  return Promise.resolve();
+}
+function collectDroppedFiles(dataTransfer) {
+  var items = dataTransfer && dataTransfer.items;
+  if (!items || !items.length || !items[0].webkitGetAsEntry) {
+    // No directory API available (Safari/older browsers) -- fall back to
+    // the flat file list. A dropped folder won't expand here, but a
+    // straightforward multi-file drop still works exactly as before.
+    return Promise.resolve(Array.prototype.slice.call((dataTransfer && dataTransfer.files) || []));
+  }
+  var entries = [];
+  for (var i = 0; i < items.length; i++) {
+    var entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry();
+    if (entry) entries.push(entry);
+  }
+  if (!entries.length) return Promise.resolve(Array.prototype.slice.call((dataTransfer && dataTransfer.files) || []));
+  var files = [];
+  return entries.reduce(function (p, entry) {
+    return p.then(function () { return collectFilesFromEntry(entry, files); });
+  }, Promise.resolve()).then(function () { return files; });
+}
 window.addEventListener("dragenter", function (e) {
   if (!isFileDrag(e)) return;
   e.preventDefault();
@@ -1931,7 +2030,13 @@ window.addEventListener("dragenter", function (e) {
   if (isVaultOpen()) dropOverlay.classList.add("active");
 });
 window.addEventListener("dragover", function (e) {
-  if (!isFileDrag(e)) return;
+  // Always prevented, even when this doesn't look like a file drag: the
+  // browser's fallback for an *unhandled* drop is to navigate the tab to
+  // whatever was dropped -- for a folder (and apparently sometimes for a
+  // multi-file drag too) that's exactly the "it just refreshed" symptom.
+  // Relying on isFileDrag() here was the bug; being unconditional costs
+  // nothing since this only stops the default action, it doesn't process
+  // anything.
   e.preventDefault();
 });
 window.addEventListener("dragleave", function (e) {
@@ -1940,13 +2045,13 @@ window.addEventListener("dragleave", function (e) {
   if (dragCounter === 0) dropOverlay.classList.remove("active");
 });
 window.addEventListener("drop", function (e) {
-  if (!isFileDrag(e)) return;
-  e.preventDefault();
+  e.preventDefault(); // see the note on dragover above -- always, not just for recognized file drags
   dragCounter = 0;
   dropOverlay.classList.remove("active");
-  if (!isVaultOpen()) return;
-  var files = Array.prototype.slice.call((e.dataTransfer && e.dataTransfer.files) || []);
-  processFiles(files);
+  if (!isFileDrag(e) || !isVaultOpen()) return;
+  collectDroppedFiles(e.dataTransfer).then(function (files) {
+    if (files.length) processFiles(files);
+  });
 });
 
 /* Per-file upload tray — a small fixed panel (bottom-right, Google-Drive
@@ -2173,9 +2278,66 @@ function detectLivePhotoPairs(files) {
   });
 }
 
+/* ---------------- Duplicate detection ----------------
+   Skips a file at upload time if something with the same name and byte
+   size already exists in the library, or if the same combination shows up
+   more than once within the same batch (a folder that itself contains a
+   couple of copies, dropping the same selection twice, etc). Name+size is
+   a deliberately cheap check rather than hashing full file contents --
+   good enough to catch the actual "I dropped this folder in again"/"this
+   was already imported from my phone" cases this is for, without reading
+   every byte of every video just to compute a checksum before it's even
+   decided whether to upload. Every existing object's real name/size lives
+   inside its own encrypted metadata, so building the index means
+   decrypting each record once -- the same thing refreshGallery() already
+   does on every render, just done here as a one-off pass right before a
+   batch starts. */
+function dupeKey(name, size) {
+  return (name || "").trim().toLowerCase() + "|" + (size || 0);
+}
+function buildExistingFileIndex() {
+  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
+    if (res.error) { console.error(res.error); return new Set(); }
+    var keys = new Set();
+    (res.data || []).forEach(function (record) {
+      try {
+        var loaded = loadObjectMeta(record);
+        keys.add(dupeKey(loaded.metaJson.name, loaded.metaJson.size));
+      } catch (e) {} // one unreadable record shouldn't block dedup for everything else
+    });
+    return keys;
+  });
+}
+function dedupeAgainstLibrary(files) {
+  return buildExistingFileIndex().then(function (existingKeys) {
+    var seenInBatch = new Set();
+    var kept = [], skipped = [];
+    files.forEach(function (file) {
+      var key = dupeKey(file.name, file.size);
+      if (existingKeys.has(key) || seenInBatch.has(key)) { skipped.push(file); return; }
+      seenInBatch.add(key);
+      kept.push(file);
+    });
+    return { kept: kept, skipped: skipped };
+  });
+}
+
 function processFiles(files) {
   if (!files.length) return;
-  expandZips(files).then(function (expanded) { processExpandedFiles(detectLivePhotoPairs(expanded)); });
+  expandZips(files).then(function (expanded) {
+    return dedupeAgainstLibrary(detectLivePhotoPairs(expanded));
+  }).then(function (result) {
+    result.skipped.forEach(function (file) {
+      logUploadResult(file.name, file.size, false, "Already in your library (same name and size) — skipped.", true);
+    });
+    if (result.skipped.length) {
+      var statusEl = $("#upload-status");
+      var noun = result.skipped.length === 1 ? "duplicate" : "duplicates";
+      statusEl.textContent = "Skipped " + result.skipped.length + " " + noun + " already in your library (see upload log).";
+      setTimeout(function () { if (statusEl.textContent.indexOf("Skipped") === 0) statusEl.textContent = ""; }, 6000);
+    }
+    processExpandedFiles(result.kept);
+  });
 }
 
 function processExpandedFiles(files) {
@@ -2507,15 +2669,54 @@ function formatDuration(sec) {
 
 /* Browsers can't decode camera RAW bytes (CR2/NEF/ARW/DNG/...) directly --
    createImageBitmap() just rejects. Almost every RAW format is TIFF-based
-   and carries a full JPEG preview inside its EXIF data though, and exifr
-   can pull that out without any raw-decoding of our own. Used both for
-   upload-time thumbnails and for showing RAW files in the viewer. */
+   and carries a JPEG preview inside its EXIF data though, and exifr can
+   pull that out without any raw-decoding of our own. Used both for
+   upload-time thumbnails and for showing RAW files in the viewer.
+
+   exifr.thumbnail() only looks at the small IFD1 thumbnail tag, and some
+   cameras -- Sony ARW especially, and some CR2s -- store their preview in
+   a maker-specific structure it doesn't follow, so it comes back with
+   nothing and no error (this is why those were showing up blank instead
+   of failing loudly). The fallback below doesn't try to understand any
+   camera's IFD layout at all: it just scans the raw bytes for a JPEG
+   SOI/EOI marker pair (FFD8...FFD9) and keeps the largest one found.
+   Virtually every RAW file embeds at least one sizable JPEG somewhere for
+   the camera's own LCD/preview, and that byte-level marker is the same
+   regardless of which manufacturer or maker-note format wraps it. */
+function scanForLargestEmbeddedJpeg(arrayBuffer) {
+  var bytes = new Uint8Array(arrayBuffer);
+  var best = null;
+  var i = 0;
+  while (i < bytes.length - 1) {
+    if (bytes[i] === 0xFF && bytes[i + 1] === 0xD8) {
+      var j = i + 2;
+      var end = -1;
+      while (j < bytes.length - 1) {
+        if (bytes[j] === 0xFF && bytes[j + 1] === 0xD9) { end = j + 2; break; }
+        j++;
+      }
+      if (end === -1) break; // no closing marker found from here on -- nothing more to scan
+      if (!best || (end - i) > best.length) best = { start: i, length: end - i };
+      i = end;
+      continue;
+    }
+    i++;
+  }
+  return best ? bytes.slice(best.start, best.start + best.length) : null;
+}
 function extractEmbeddedPreview(fileOrBlob) {
-  if (!window.exifr || !window.exifr.thumbnail) return Promise.resolve(null);
-  return exifr.thumbnail(fileOrBlob).then(function (arrayBuffer) {
-    if (!arrayBuffer) return null;
-    return new Blob([arrayBuffer], { type: "image/jpeg" });
-  }).catch(function () { return null; });
+  var viaExifr = (window.exifr && window.exifr.thumbnail)
+    ? exifr.thumbnail(fileOrBlob).then(function (arrayBuffer) {
+        return arrayBuffer ? new Blob([arrayBuffer], { type: "image/jpeg" }) : null;
+      }).catch(function () { return null; })
+    : Promise.resolve(null);
+  return viaExifr.then(function (blob) {
+    if (blob) return blob;
+    return fileOrBlob.arrayBuffer().then(function (buf) {
+      var jpegBytes = scanForLargestEmbeddedJpeg(buf);
+      return jpegBytes ? new Blob([jpegBytes], { type: "image/jpeg" }) : null;
+    }).catch(function () { return null; });
+  });
 }
 
 function bitmapToJpegBlob(bitmap, max) {
@@ -2935,15 +3136,17 @@ var uploadLog = loadUploadLog();
 function saveUploadLog() {
   try { localStorage.setItem(UPLOAD_LOG_KEY, JSON.stringify(uploadLog.slice(0, UPLOAD_LOG_MAX))); } catch (e) {}
 }
-function logUploadResult(name, size, ok, error) {
-  uploadLog.unshift({ name: name, size: size, ok: ok, error: error || null, when: Date.now() });
+function logUploadResult(name, size, ok, error, skipped) {
+  uploadLog.unshift({ name: name, size: size, ok: ok, error: error || null, skipped: !!skipped, when: Date.now() });
   if (uploadLog.length > UPLOAD_LOG_MAX) uploadLog.length = UPLOAD_LOG_MAX;
   saveUploadLog();
   renderUploadLog();
   updateLogBadge();
 }
 function updateLogBadge() {
-  var failCount = uploadLog.reduce(function (n, e) { return n + (e.ok ? 0 : 1); }, 0);
+  // A skipped duplicate isn't a failure -- it's working as intended -- so
+  // it doesn't count toward the red "something needs attention" badge.
+  var failCount = uploadLog.reduce(function (n, e) { return n + (!e.ok && !e.skipped ? 1 : 0); }, 0);
   var badge = $("#log-badge");
   if (!badge) return;
   badge.textContent = String(failCount);
@@ -2959,16 +3162,19 @@ function renderUploadLog() {
   host.innerHTML = "";
   uploadLog.forEach(function (entry) {
     var row = document.createElement("div");
-    row.className = "log-row " + (entry.ok ? "log-ok" : "log-fail");
+    var statusClass = entry.skipped ? "log-skip" : (entry.ok ? "log-ok" : "log-fail");
+    var statusText = entry.skipped ? "SKIPPED" : (entry.ok ? "OK" : "FAILED");
+    row.className = "log-row " + statusClass;
     var when = new Date(entry.when);
     var whenStr = isNaN(when.getTime()) ? "" : when.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    var hasReason = !entry.ok || entry.skipped;
     row.innerHTML =
-      '<span class="log-status">' + (entry.ok ? "OK" : "FAILED") + '</span>' +
+      '<span class="log-status">' + statusText + '</span>' +
       '<span class="log-body"><span class="log-name"></span>' +
-      (entry.ok ? "" : '<div class="log-reason"></div>') + '</span>' +
+      (hasReason ? '<div class="log-reason"></div>' : "") + '</span>' +
       '<span class="log-when"></span>';
     row.querySelector(".log-name").textContent = entry.name + (entry.size ? " · " + formatSize(entry.size) : "");
-    if (!entry.ok) row.querySelector(".log-reason").textContent = entry.error || "Unknown error.";
+    if (hasReason) row.querySelector(".log-reason").textContent = entry.error || "Unknown error.";
     row.querySelector(".log-when").textContent = whenStr;
     host.appendChild(row);
   });
@@ -3023,6 +3229,36 @@ function replaceObjectContent(record, fileKey, metaJson, newContentBlob, newThum
     galleryPreviewCache.delete(record.id);
     return patchedMeta;
   });
+}
+
+// Makes an independent copy of an item -- a new database row with its own
+// id AND its own copy of the underlying bytes in R2, not just a second
+// reference to the same content_path. That second part matters: crop and
+// trim overwrite a row's existing content_path in place (see
+// replaceObjectContent above), so if a duplicate shared the original's
+// path, editing either copy would silently corrupt the other. The actual
+// byte copy happens inside Cloudflare/R2 via r2Copy, not by downloading
+// and re-uploading the file through this tab.
+function duplicateObject(record, fileKey, metaJson) {
+  var newId = newUploadId();
+  var newContentPath = state.userId + "/" + newId + "/content";
+  var newThumbPath = record.thumbnail_path ? (state.userId + "/" + newId + "/thumb") : null;
+  return r2Copy(record.content_path, newContentPath)
+    .then(function () { return newThumbPath ? r2Copy(record.thumbnail_path, newThumbPath) : null; })
+    .then(function () {
+      var dupMeta = Object.assign({}, metaJson, { name: (metaJson.name || "(unnamed)") + " copy" });
+      var wrappedFileKey = toB64(encryptBytes(state.masterKey, fileKey));
+      var encryptedMetadata = toB64(encryptBytes(fileKey, new TextEncoder().encode(JSON.stringify(dupMeta))));
+      return sb.from("objects").insert({
+        id: newId, user_id: state.userId, kind: record.kind,
+        wrapped_file_key: wrappedFileKey, encrypted_metadata: encryptedMetadata,
+        content_path: newContentPath, thumbnail_path: newThumbPath,
+      });
+    })
+    .then(function (res) {
+      if (res.error) throw res.error;
+      return newId;
+    });
 }
 
 /* ---------------- Fast video preview (client-side transcode) ----------------
@@ -3293,46 +3529,119 @@ window.addEventListener("wheel", function (e) {
    Folders are just a field inside each item's already-encrypted metadata —
    there's no separate folder table, so Supabase never learns folder names
    either. "All items" (an empty string) means no filter; a brand-new folder
-   is remembered client-side until the first item is actually moved into it. */
+   is remembered client-side until the first item is actually moved into it.
+
+   Rendered as a row of chips (rather than a dropdown) so folders can also
+   work as drop targets: dragging a tile (or the current multi-selection)
+   onto a chip moves it there, same as dragging a file onto a folder in
+   Finder/Explorer/Google Drive. A custom drag MIME type keeps this
+   separate from the page's existing "drop an OS file to upload it"
+   handling -- an internal item-drag never carries a "Files" entry, so it
+   never triggers that path, and vice versa. */
 var currentFolder = "";
 var knownFolders = new Set();
-
-$("#folder-select").addEventListener("change", function (e) {
-  var val = e.target.value;
-  if (val === "__new__") {
-    var name = (prompt("Name this folder:") || "").trim();
-    if (!name) { renderFolderOptions(); return; }
-    knownFolders.add(name);
-    currentFolder = name;
+var GHOSTDRIVE_DRAG_MIME = "application/x-ghostdrive-ids";
+function isItemDrag(e) {
+  var types = (e.dataTransfer && e.dataTransfer.types) || [];
+  return Array.prototype.indexOf.call(types, GHOSTDRIVE_DRAG_MIME) !== -1;
+}
+function getDraggedItemIds(e) {
+  try {
+    var raw = e.dataTransfer.getData(GHOSTDRIVE_DRAG_MIME);
+    return raw ? JSON.parse(raw) : [];
+  } catch (err) { return []; }
+}
+// Moves one or more items into (or out of, for folderName === "") a
+// folder. Each record's metadata has to be individually decrypted, patched
+// and re-encrypted (see patchObjectMetadata) since the folder name lives
+// inside that per-item encrypted blob, same as the filename/date.
+function moveItemsToFolder(ids, folderName) {
+  if (!ids || !ids.length) return Promise.resolve();
+  return sb.from("objects").select("*").in("id", ids).then(function (res) {
+    if (res.error) throw res.error;
+    var records = res.data || [];
+    return records.reduce(function (p, record) {
+      return p.then(function () {
+        var loaded = loadObjectMeta(record);
+        if ((loaded.metaJson.folder || "") === folderName) return null; // already there
+        return patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, { folder: folderName });
+      });
+    }, Promise.resolve());
+  }).then(function () {
+    if (folderName) knownFolders.add(folderName);
     refreshGallery();
-    return;
-  }
-  currentFolder = val;
-  refreshGallery();
-});
-
+  }).catch(function (err) {
+    console.error("move to folder failed", err);
+    alert("Couldn't move item(s) to that folder: " + friendlyError(err));
+  });
+}
+function promptNewFolderName() {
+  return (prompt("Name this folder:") || "").trim();
+}
 function renderFolderOptions(allFolders) {
   var folders = Array.from(new Set([].concat(Array.from(knownFolders), allFolders || []))).sort(function (a, b) {
     return a.localeCompare(b);
   });
-  var select = $("#folder-select");
-  select.innerHTML = "";
-  var allOpt = document.createElement("option");
-  allOpt.value = "";
-  allOpt.textContent = "All items";
-  select.appendChild(allOpt);
-  folders.forEach(function (name) {
-    var opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    select.appendChild(opt);
-  });
-  var newOpt = document.createElement("option");
-  newOpt.value = "__new__";
-  newOpt.textContent = "+ New folder…";
-  select.appendChild(newOpt);
-  select.value = currentFolder;
+  var host = $("#folder-chips");
+  host.innerHTML = "";
 
+  function makeChip(name, label, extraClass) {
+    var chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "folder-chip" + (extraClass ? " " + extraClass : "") + (currentFolder === name && !extraClass ? " active" : "");
+    chip.textContent = label;
+    chip.addEventListener("dragover", function (e) {
+      if (!isItemDrag(e)) return;
+      e.preventDefault();
+      chip.classList.add("drag-over");
+    });
+    chip.addEventListener("dragleave", function () { chip.classList.remove("drag-over"); });
+    chip.addEventListener("drop", function (e) {
+      if (!isItemDrag(e)) return;
+      e.preventDefault();
+      chip.classList.remove("drag-over");
+      var ids = getDraggedItemIds(e);
+      if (ids.length) moveItemsToFolder(ids, name);
+    });
+    return chip;
+  }
+
+  var allChip = makeChip("", "All items");
+  allChip.addEventListener("click", function () { currentFolder = ""; refreshGallery(); });
+  host.appendChild(allChip);
+  folders.forEach(function (name) {
+    var chip = makeChip(name, name);
+    chip.addEventListener("click", function () { currentFolder = name; refreshGallery(); });
+    host.appendChild(chip);
+  });
+
+  var newChip = document.createElement("button");
+  newChip.type = "button";
+  newChip.className = "folder-chip folder-chip-new";
+  newChip.textContent = "+ New folder";
+  newChip.title = "Click to create, or drag items here to create and move them in one step";
+  newChip.addEventListener("click", function () {
+    var name = promptNewFolderName();
+    if (!name) return;
+    knownFolders.add(name);
+    currentFolder = name;
+    refreshGallery();
+  });
+  newChip.addEventListener("dragover", function (e) { if (isItemDrag(e)) { e.preventDefault(); newChip.classList.add("drag-over"); } });
+  newChip.addEventListener("dragleave", function () { newChip.classList.remove("drag-over"); });
+  newChip.addEventListener("drop", function (e) {
+    if (!isItemDrag(e)) return;
+    e.preventDefault();
+    newChip.classList.remove("drag-over");
+    var ids = getDraggedItemIds(e);
+    if (!ids.length) return;
+    var name = promptNewFolderName();
+    if (!name) return;
+    moveItemsToFolder(ids, name);
+  });
+  host.appendChild(newChip);
+
+  // Still used by the viewer's folder text field for autocomplete.
   var datalist = $("#folder-suggestions");
   datalist.innerHTML = "";
   folders.forEach(function (name) {
@@ -3720,6 +4029,19 @@ function renderTile(record, metaJson) {
   tile.dataset.aspect = (metaJson.width && metaJson.height) ? (metaJson.width / metaJson.height) : 1;
   if (selectedIds.has(record.id)) tile.classList.add("selected");
 
+  // Drag this tile onto a folder chip to move it there. If the tile being
+  // dragged is part of the current multi-selection, the whole selection
+  // rides along -- same convention as Finder/Explorer/Google Drive: drag
+  // any selected item and everything selected moves together.
+  tile.draggable = true;
+  tile.addEventListener("dragstart", function (e) {
+    var ids = (selectedIds.has(record.id) && selectedIds.size > 0) ? Array.from(selectedIds) : [record.id];
+    e.dataTransfer.setData(GHOSTDRIVE_DRAG_MIME, JSON.stringify(ids));
+    e.dataTransfer.effectAllowed = "move";
+    tile.classList.add("dragging");
+  });
+  tile.addEventListener("dragend", function () { tile.classList.remove("dragging"); });
+
   if (record.thumbnail_path) {
     var img = document.createElement("img");
     if (!(metaJson.width && metaJson.height)) {
@@ -4060,6 +4382,7 @@ function openViewer(id) {
     $("#viewer-date").value = toDatetimeLocalValue(loaded.metaJson.date);
     $("#viewer-folder").value = loaded.metaJson.folder || "";
     $("#btn-viewer-crop").classList.add("hidden");
+    $("#btn-viewer-crop-icon").classList.add("hidden");
     $("#btn-viewer-trim").classList.add("hidden");
     exitCropMode();
     exitTrimMode();
@@ -4214,6 +4537,7 @@ function openViewer(id) {
       // for the untouched original. Cropping the fallback preview wouldn't
       // touch the actual RAW original, so cropping isn't offered here.
       $("#btn-viewer-crop").classList.add("hidden");
+      $("#btn-viewer-crop-icon").classList.add("hidden");
       renderRawFallback(mediaHost, blob, url, ext);
       return;
     }
@@ -4224,6 +4548,7 @@ function openViewer(id) {
       // Some other format this browser can't render (e.g. HEIC outside
       // Safari) -- same embedded-preview fallback as RAW.
       $("#btn-viewer-crop").classList.add("hidden");
+      $("#btn-viewer-crop-icon").classList.add("hidden");
       imgEl.remove();
       renderRawFallback(mediaHost, blob, url, ext);
     };
@@ -4252,6 +4577,13 @@ function openViewer(id) {
     mediaHost.appendChild(imgEl);
     viewerState.imgEl = imgEl;
     $("#btn-viewer-crop").classList.remove("hidden");
+    // The visible top-bar crop icon (Quick-Look-style controls, same row
+    // as trim/details/delete) -- was sitting in the markup unwired this
+    // whole time, hidden and never un-hidden by anything, so cropping was
+    // only reachable through the Crop button buried in the details panel
+    // behind the gear icon. This makes it act as a second, more visible
+    // trigger for the exact same crop flow.
+    $("#btn-viewer-crop-icon").classList.remove("hidden");
   }).catch(function (err) {
     $("#viewer-media").textContent = "Couldn't load this file: " + friendlyError(err);
   });
@@ -4338,7 +4670,7 @@ function exitCropMode() {
   $("#crop-actions").classList.add("hidden");
 }
 
-$("#btn-viewer-crop").addEventListener("click", function () {
+function enterCropMode() {
   var img = viewerState.imgEl;
   if (!img) return;
   var rect = img.getBoundingClientRect();
@@ -4355,6 +4687,26 @@ $("#btn-viewer-crop").addEventListener("click", function () {
   positionCropBox();
   $("#crop-overlay").classList.remove("hidden");
   $("#crop-actions").classList.remove("hidden");
+}
+$("#btn-viewer-crop").addEventListener("click", enterCropMode);
+$("#btn-viewer-crop-icon").addEventListener("click", enterCropMode);
+
+$("#btn-viewer-duplicate").addEventListener("click", function () {
+  if (!viewerState || !viewerState.id) return;
+  var btn = $("#btn-viewer-duplicate");
+  btn.disabled = true;
+  sb.from("objects").select("*").eq("id", viewerState.id).maybeSingle().then(function (res) {
+    if (res.error || !res.data) throw (res.error || new Error("Couldn't find this item"));
+    var record = res.data;
+    var loaded = loadObjectMeta(record);
+    return duplicateObject(record, loaded.fileKey, loaded.metaJson);
+  }).then(function (newId) {
+    refreshGallery();
+    openViewer(newId);
+  }).catch(function (err) {
+    console.error("duplicate failed", err);
+    alert("Couldn't duplicate this item: " + friendlyError(err));
+  }).then(function () { btn.disabled = false; });
 });
 
 function positionCropBox() {
