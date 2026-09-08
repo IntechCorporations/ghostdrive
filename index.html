@@ -441,6 +441,8 @@
   .crop-handle[data-handle="se"] { bottom: 0; right: 0; margin-right: -7px; margin-bottom: -7px; cursor: nwse-resize; }
   .crop-actions { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
   .crop-actions.hidden { display: none; }
+  .crop-actions .crop-rotate { display: inline-flex; align-items: center; justify-content: center; padding: 11px 14px; }
+  .crop-actions .crop-rotate svg { width: 16px; height: 16px; flex: 0 0 auto; display: block; }
 
   /* ---------------- Video trim ---------------- */
   .trim-bar {
@@ -820,6 +822,12 @@
         </div>
       </div>
       <div id="crop-actions" class="crop-actions hidden">
+        <button type="button" id="btn-crop-rotate-ccw" class="secondary crop-rotate" title="Rotate left 90°" aria-label="Rotate left 90 degrees">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h11a5 5 0 0 1 5 5v1a5 5 0 0 1-5 5H8"/><polyline points="7 4 3 8 7 12"/></svg>
+        </button>
+        <button type="button" id="btn-crop-rotate-cw" class="secondary crop-rotate" title="Rotate right 90°" aria-label="Rotate right 90 degrees">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8H10a5 5 0 0 0-5 5v1a5 5 0 0 0 5 5h6"/><polyline points="17 4 21 8 17 12"/></svg>
+        </button>
         <button id="btn-crop-cancel" class="secondary">Cancel</button>
         <button id="btn-crop-apply">Apply crop</button>
       </div>
@@ -1528,7 +1536,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-08b people-feed-rotate-dates";
+var GHOSTDRIVE_BUILD = "2026-09-08e raw-edits-save-as-new-jpeg";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -2824,6 +2832,67 @@ function scanForLargestEmbeddedJpeg(arrayBuffer) {
   }
   return best ? bytes.slice(best.start, best.start + best.length) : null;
 }
+
+/* ---------------- HEIC decoding ----------------
+   Safari decodes HEIC in a plain <img>. Nothing else does -- Chrome, Edge
+   and Firefox just fire onerror -- so an iPhone photo used to land in the
+   same embedded-preview fallback camera RAW gets: a small EXIF preview,
+   with crop and rotate switched off, on the majority of browsers.
+   libheif compiled to WebAssembly decodes the actual image instead. The
+   bundle is ~1.2MB, so it is fetched lazily the first time a HEIC really
+   needs it and reused from then on; a session that never opens a HEIC
+   never pays for it. The decode runs entirely in the page -- the bytes
+   never leave the browser. */
+var LIBHEIF_URL = "https://cdn.jsdelivr.net/npm/libheif-js@1.18.2/libheif-wasm/libheif-bundle.js";
+var libheifPromise = null;
+function loadLibheif() {
+  if (libheifPromise) return libheifPromise;
+  libheifPromise = new Promise(function (resolve, reject) {
+    if (window.libheif) return resolve(window.libheif);
+    var script = document.createElement("script");
+    script.src = LIBHEIF_URL;
+    script.onload = function () {
+      window.libheif ? resolve(window.libheif) : reject(new Error("HEIC decoder loaded but didn't register"));
+    };
+    script.onerror = function () { reject(new Error("couldn't load the HEIC decoder")); };
+    document.head.appendChild(script);
+  }).then(function (lib) {
+    // The global is a factory that resolves to the module, not the module
+    // itself -- reading HeifDecoder straight off it gives undefined.
+    return typeof lib === "function" ? lib() : lib;
+  });
+  libheifPromise.catch(function () { libheifPromise = null; }); // a later open can retry
+  return libheifPromise;
+}
+
+/* Decodes HEIC/HEIF bytes into a JPEG blob plus the real pixel dimensions.
+   Resolves null (rather than rejecting) when the file turns out not to be
+   decodable after all, so the caller can fall back to the embedded preview
+   instead of showing an error for something that still has a usable
+   picture in it. */
+function decodeHeicToBlob(blob) {
+  return loadLibheif().then(function (mod) {
+    return blob.arrayBuffer().then(function (buf) {
+      var images = new mod.HeifDecoder().decode(new Uint8Array(buf));
+      if (!images || !images.length) return null;
+      var image = images[0];
+      var width = image.get_width(), height = image.get_height();
+      if (!width || !height) return null;
+      var canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      var ctx = canvas.getContext("2d");
+      var imageData = ctx.createImageData(width, height);
+      return new Promise(function (resolve) {
+        image.display(imageData, function (result) { resolve(result); });
+      }).then(function (result) {
+        if (!result) return null;
+        ctx.putImageData(imageData, 0, 0);
+        return new Promise(function (resolve) { canvas.toBlob(resolve, "image/jpeg", 0.92); })
+          .then(function (jpeg) { return jpeg ? { blob: jpeg, width: width, height: height } : null; });
+      });
+    });
+  });
+}
 /* ---------------- Original capture date ----------------
    The date shown for an item should be when it was taken, full stop --
    never when it was uploaded here, edited, or last touched on disk.
@@ -2920,18 +2989,34 @@ function readCaptureDate(file, kind) {
   });
 }
 
-function extractEmbeddedPreview(fileOrBlob) {
+function extractEmbeddedPreview(fileOrBlob, wantLargest) {
   var viaExifr = (window.exifr && window.exifr.thumbnail)
     ? exifr.thumbnail(fileOrBlob).then(function (arrayBuffer) {
         return arrayBuffer ? new Blob([arrayBuffer], { type: "image/jpeg" }) : null;
       }).catch(function () { return null; })
     : Promise.resolve(null);
-  return viaExifr.then(function (blob) {
-    if (blob) return blob;
+  function viaByteScan() {
     return fileOrBlob.arrayBuffer().then(function (buf) {
       var jpegBytes = scanForLargestEmbeddedJpeg(buf);
       return jpegBytes ? new Blob([jpegBytes], { type: "image/jpeg" }) : null;
     }).catch(function () { return null; });
+  }
+  return viaExifr.then(function (blob) {
+    // A 320px gallery tile is happy with whichever preview turns up first,
+    // so the cheap exifr path still wins there. The viewer is not: it wants
+    // the biggest image in the file. exifr.thumbnail() reads the IFD1 tag,
+    // which on a CR2 is typically a 160x120 postage stamp -- while that
+    // same file also carries a near-full-resolution JPEG deeper in. Taking
+    // whatever exifr returned first is why a RAW opened full-screen looked
+    // like a blurry stamp: not the preview failing, the wrong preview
+    // winning. When the caller wants the largest, run both and keep the
+    // bigger blob.
+    if (blob && !wantLargest) return blob;
+    return viaByteScan().then(function (scanned) {
+      if (!blob) return scanned;
+      if (!scanned) return blob;
+      return scanned.size > blob.size ? scanned : blob;
+    });
   });
 }
 
@@ -3430,8 +3515,21 @@ function uploadQueueEntry(entry, onProgress, signal) {
       return sb.from("objects").insert(entry.dbPayload);
     })
     .then(function (res) {
-      if (res.error) throw res.error;
-      if (entry.dbPayload.kind === "video") scheduleVideoPreview(entry); // fire-and-forget; see "Fast video preview" section
+      // A 23505 (unique_violation) on objects_pkey means this exact row is
+      // ALREADY in the table -- an earlier attempt's insert really did land,
+      // and only the bookkeeping after it (the queue delete, a dropped
+      // connection while the response came back) failed. Re-inserting the
+      // same id can never succeed, so treating that as an error is what
+      // turned one half-finished upload into a queue entry that failed
+      // forever: the catch below re-queued it, the next drain re-inserted
+      // it, and it logged FAILED on every app open -- while the file was
+      // sitting in the library the whole time. The transfer is genuinely
+      // complete here, so fall through to the same cleanup a first-time
+      // insert gets and let the entry leave the queue.
+      var alreadyInserted = res.error && (res.error.code === "23505"
+        || /duplicate key value violates unique constraint/i.test(res.error.message || ""));
+      if (res.error && !alreadyInserted) throw res.error;
+      if (!alreadyInserted && entry.dbPayload.kind === "video") scheduleVideoPreview(entry); // fire-and-forget; see "Fast video preview" section
       // Always attempt this, regardless of stage: a plain drag-and-drop
       // large upload was never durably queued in the first place, so this
       // is a harmless no-op for it. A large upload that came from the
@@ -3741,6 +3839,59 @@ function replaceObjectContent(record, fileKey, metaJson, newContentBlob, newThum
     galleryPreviewCache.delete(record.id);
     return patchedMeta;
   });
+}
+
+/* Saves an edit made to a RAW file's extracted preview as a NEW JPEG item,
+   leaving the original RAW byte-for-byte untouched.
+   Crop and rotate normally overwrite an item's own bytes, which is the
+   right thing for a JPEG or a HEIC: what's on screen IS the file. For a
+   CR2 or NEF it isn't. No browser can decode raw sensor data, so what's
+   displayed is a JPEG preview pulled out of the file -- and overwriting
+   the CR2 with a crop of that preview would throw the raw original away
+   permanently in exchange for a derived, lower-resolution JPEG. So a RAW
+   edit lands beside the original as its own item instead.
+   Reuses the source item's fileKey (re-wrapped under the master key), the
+   same way duplicateObject does, and carries the original capture date
+   across so the derived copy sorts next to the shot it came from rather
+   than to today. */
+function saveDerivedImage(blob, width, height, suffix) {
+  var sourceMeta = viewerState.metaJson || {};
+  var fileKey = viewerState.fileKey;
+  var newId = newUploadId();
+  var contentPath = state.userId + "/" + newId + "/content";
+  var thumbPath = state.userId + "/" + newId + "/thumb";
+  var baseName = String(sourceMeta.name || "photo").replace(/\.[^.]+$/, "");
+  var derivedMeta = Object.assign({}, sourceMeta, {
+    name: baseName + " (" + suffix + ").jpg",
+    ext: "jpg",
+    mime: "image/jpeg",
+    width: width,
+    height: height,
+    size: blob.size,
+    contentEncrypted: false,
+    derivedFrom: viewerState.id,
+  });
+  return createImageBitmap(blob)
+    .then(function (bitmap) { return bitmapToJpegBlob(bitmap, 320); })
+    .then(function (thumbBlob) {
+      return blob.arrayBuffer()
+        .then(function (buf) { return r2UploadFileRaw(contentPath, new File([buf], "content"), null); })
+        .then(function () { return thumbBlob.arrayBuffer(); })
+        .then(function (tb) { return r2PutSmall(thumbPath, encryptChunkFrame(fileKey, new Uint8Array(tb))); });
+    })
+    .then(function () {
+      var wrappedFileKey = toB64(encryptBytes(state.masterKey, fileKey));
+      var encryptedMetadata = toB64(encryptBytes(fileKey, new TextEncoder().encode(JSON.stringify(derivedMeta))));
+      return sb.from("objects").insert({
+        id: newId, user_id: state.userId, kind: "photo",
+        wrapped_file_key: wrappedFileKey, encrypted_metadata: encryptedMetadata,
+        content_path: contentPath, thumbnail_path: thumbPath,
+      });
+    })
+    .then(function (res) {
+      if (res.error) throw res.error;
+      return newId;
+    });
 }
 
 // Makes an independent copy of an item -- a new database row with its own
@@ -5011,13 +5162,43 @@ function openViewer(id) {
     var imgEl = document.createElement("img");
     imgEl.src = url;
     imgEl.onerror = function () {
-      // Some other format this browser can't render (e.g. HEIC outside
-      // Safari) -- same embedded-preview fallback as RAW.
-      $("#btn-viewer-crop").classList.add("hidden");
-      $("#btn-viewer-crop-icon").classList.add("hidden");
-      $$(".viewer-photo-rotate").forEach(function (b) { b.classList.add("hidden"); });
+      // This browser can't decode these bytes in an <img>. For HEIC that is
+      // every browser except Safari, and it is recoverable: decode it
+      // properly and carry on as an ordinary photo, crop and rotate
+      // included. Only when that fails too does this drop to the
+      // embedded-preview fallback that camera RAW uses.
       imgEl.remove();
-      renderRawFallback(mediaHost, blob, url, ext);
+      var isHeic = ext === "heic" || ext === "heif";
+      var pending = document.createElement("div");
+      pending.className = "raw-note";
+      pending.textContent = isHeic ? "Decoding HEIC…" : "Rendering preview…";
+      mediaHost.appendChild(pending);
+      var attempt = isHeic
+        ? decodeHeicToBlob(blob).catch(function () { return null; })
+        : Promise.resolve(null);
+      attempt.then(function (decoded) {
+        pending.remove();
+        if (!decoded) {
+          $("#btn-viewer-crop").classList.add("hidden");
+          $("#btn-viewer-crop-icon").classList.add("hidden");
+          $$(".viewer-photo-rotate").forEach(function (b) { b.classList.add("hidden"); });
+          renderRawFallback(mediaHost, blob, url, ext);
+          return;
+        }
+        // Full-resolution pixels, so this behaves like any other photo from
+        // here on. Saving an edit re-encodes to JPEG, which is already what
+        // rotate does for HEIC -- canvas cannot write HEIC back out.
+        var decodedUrl = URL.createObjectURL(decoded.blob);
+        viewerState.previewUrl = decodedUrl;
+        var decodedImg = document.createElement("img");
+        decodedImg.src = decodedUrl;
+        mediaHost.appendChild(decodedImg);
+        viewerState.imgEl = decodedImg;
+        mediaHost.classList.add("zoom-ready");
+        $("#btn-viewer-crop").classList.remove("hidden");
+        $("#btn-viewer-crop-icon").classList.remove("hidden");
+        $$(".viewer-photo-rotate").forEach(function (b) { b.classList.remove("hidden"); });
+      });
     };
     // Click to zoom in, click again to zoom out. The zoom itself is the
     // CSS rules above (scale + a scrollable container); this just toggles
@@ -5043,6 +5224,15 @@ function openViewer(id) {
     });
     mediaHost.appendChild(imgEl);
     viewerState.imgEl = imgEl;
+    if (reenterCropForId && reenterCropForId === viewerState.id) {
+      reenterCropForId = null;
+      // Wait for the image to actually lay out -- enterCropMode measures it
+      // with getBoundingClientRect, which is all zeroes until then, and a
+      // crop box built from zeroes is invisible and undraggable.
+      var resumeCrop = function () { requestAnimationFrame(enterCropMode); };
+      if (imgEl.complete && imgEl.naturalWidth) resumeCrop();
+      else imgEl.addEventListener("load", resumeCrop, { once: true });
+    }
     $("#btn-viewer-crop").classList.remove("hidden");
     // The visible top-bar crop icon (Quick-Look-style controls, same row
     // as trim/details/delete) -- was sitting in the markup unwired this
@@ -5063,7 +5253,7 @@ function renderRawFallback(mediaHost, originalBlob, originalUrl, ext) {
   loading.textContent = "Rendering preview…";
   mediaHost.appendChild(loading);
 
-  extractEmbeddedPreview(originalBlob).then(function (previewBlob) {
+  extractEmbeddedPreview(originalBlob, true).then(function (previewBlob) {
     loading.remove();
     if (previewBlob) {
       var previewUrl = URL.createObjectURL(previewBlob);
@@ -5071,11 +5261,20 @@ function renderRawFallback(mediaHost, originalBlob, originalUrl, ext) {
       var imgEl = document.createElement("img");
       imgEl.src = previewUrl;
       mediaHost.appendChild(imgEl);
+      // Crop and rotate DO work here, on the preview -- but they save the
+      // result as a new JPEG beside the original rather than overwriting
+      // raw sensor data with a crop of a preview. This flag is what routes
+      // them to saveDerivedImage instead of replaceObjectContent.
+      viewerState.imgEl = imgEl;
+      viewerState.derivedFromRaw = true;
+      $("#btn-viewer-crop").classList.remove("hidden");
+      $("#btn-viewer-crop-icon").classList.remove("hidden");
+      $$(".viewer-photo-rotate").forEach(function (b) { b.classList.remove("hidden"); });
     }
     var note = document.createElement("div");
     note.className = "raw-note";
     note.textContent = previewBlob
-      ? "Preview from embedded EXIF data — the original ." + ext.toUpperCase() + " file is untouched."
+      ? "Full-size preview from inside the ." + ext.toUpperCase() + " — the original is untouched. Cropping or rotating saves the result as a new JPEG beside it."
       : "This browser can't preview ." + ext.toUpperCase() + " files.";
     mediaHost.appendChild(note);
 
@@ -5160,6 +5359,14 @@ function exitCropMode() {
   $("#crop-actions").classList.add("hidden");
 }
 
+/* Rotating saves and reloads the item, which tears the crop overlay down.
+   This remembers that the reload came from the rotate button inside the
+   crop bar, so crop mode can be picked back up on the rotated image --
+   otherwise straightening something mid-crop would silently drop you back
+   to the plain viewer. Keyed by id so a failed rotate can't leave the next
+   unrelated photo opening straight into crop. */
+var reenterCropForId = null;
+
 function enterCropMode() {
   var img = viewerState.imgEl;
   if (!img) return;
@@ -5186,6 +5393,15 @@ $("#btn-date-today").addEventListener("click", function () {
 });
 $("#btn-viewer-crop").addEventListener("click", enterCropMode);
 $("#btn-viewer-crop-icon").addEventListener("click", enterCropMode);
+
+function rotateWithinCrop(direction) {
+  var id = viewerState.id;
+  exitCropMode();
+  reenterCropForId = id;
+  rotateCurrentPhoto(direction);
+}
+$("#btn-crop-rotate-ccw").addEventListener("click", function () { rotateWithinCrop("ccw"); });
+$("#btn-crop-rotate-cw").addEventListener("click", function () { rotateWithinCrop("cw"); });
 
 /* ---------------- Photo rotate ----------------
    A real, saved rotation: the displayed image is redrawn into a canvas
@@ -5228,6 +5444,11 @@ function rotateCurrentPhoto(direction) {
   new Promise(function (resolve) { canvas.toBlob(resolve, outMime, 0.92); })
     .then(function (rotatedBlob) {
       if (!rotatedBlob) throw new Error("this browser couldn't re-encode the rotated image");
+      if (viewerState.derivedFromRaw) {
+        return saveDerivedImage(rotatedBlob, h, w, "rotated").then(function (newId) {
+          return { derivedId: newId };
+        });
+      }
       return sb.from("objects").select("*").eq("id", viewerState.id).maybeSingle().then(function (res) {
         if (res.error) throw res.error;
         var rec = res.data;
@@ -5240,13 +5461,17 @@ function rotateCurrentPhoto(direction) {
           });
         });
       });
-    }).then(function (patchedMeta) {
-      viewerState.metaJson = patchedMeta;
+    }).then(function (result) {
       release();
       refreshGallery();
       // Release the pre-rotation object URL before the reload replaces it.
       try { if (viewerState.mediaUrl) URL.revokeObjectURL(viewerState.mediaUrl); } catch (e) {}
       try { if (viewerState.previewUrl) URL.revokeObjectURL(viewerState.previewUrl); } catch (e) {}
+      if (result && result.derivedId) {
+        openViewer(result.derivedId); // the new JPEG -- the RAW is untouched
+        return;
+      }
+      viewerState.metaJson = result;
       openViewer(viewerState.id); // reload from the rotated bytes
     }).catch(function (err) {
       release();
@@ -5340,23 +5565,45 @@ $("#btn-crop-apply").addEventListener("click", function () {
   canvas.width = sw; canvas.height = sh;
   canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
 
-  new Promise(function (resolve) { canvas.toBlob(resolve, viewerState.metaJson.mime || "image/jpeg", 0.9); })
+  // Canvas can only encode jpeg/png/webp. Handing toBlob an "image/heic"
+  // quietly returns a PNG (or null), which would then be stored under a
+  // mime that disagrees with its own bytes -- the exact class of mismatch
+  // that made video unplayable earlier. Fall back to JPEG and record that,
+  // the same way rotate already does.
+  var cropSourceMime = (viewerState.metaJson.mime || "").toLowerCase();
+  var cropOutMime = CANVAS_ENCODABLE_MIME.indexOf(cropSourceMime) !== -1 ? cropSourceMime : "image/jpeg";
+  new Promise(function (resolve) { canvas.toBlob(resolve, cropOutMime, 0.9); })
     .then(function (croppedBlob) {
+      if (!croppedBlob) throw new Error("this browser couldn't encode the cropped image");
+      // What's on screen for a RAW is a preview extracted from the file,
+      // not the file -- so the crop is saved as its own new JPEG and the
+      // raw original is left alone. See saveDerivedImage.
+      if (viewerState.derivedFromRaw) {
+        return saveDerivedImage(croppedBlob, sw, sh, "crop").then(function (newId) {
+          return { derivedId: newId };
+        });
+      }
       return sb.from("objects").select("*").eq("id", viewerState.id).maybeSingle().then(function (res) {
+        if (res.error) throw res.error;
         var rec = res.data;
+        if (!rec) throw new Error("this item no longer exists");
         return createImageBitmap(croppedBlob).then(function (bitmap) {
           return bitmapToJpegBlob(bitmap, 320).then(function (thumbBlob) {
             return replaceObjectContent(rec, viewerState.fileKey, viewerState.metaJson, croppedBlob, thumbBlob, {
-              width: sw, height: sh, size: croppedBlob.size,
+              width: sw, height: sh, size: croppedBlob.size, mime: cropOutMime,
             });
           });
         });
       });
-    }).then(function (patchedMeta) {
-      viewerState.metaJson = patchedMeta;
+    }).then(function (result) {
       exitCropMode();
       applyBtn.disabled = false; applyBtn.textContent = "Apply crop";
       refreshGallery();
+      if (result && result.derivedId) {
+        openViewer(result.derivedId); // the new JPEG -- the RAW is still there, unchanged
+        return;
+      }
+      viewerState.metaJson = result;
       openViewer(viewerState.id); // reload with the new cropped content
     }).catch(function (err) {
       applyBtn.disabled = false; applyBtn.textContent = "Apply crop";
