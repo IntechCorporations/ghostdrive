@@ -725,7 +725,7 @@
           <button type="button" id="btn-open-reels" class="secondary">&#9654; Shuffle: photos + videos</button>
           <button type="button" id="btn-open-reels-video" class="secondary">&#9654; Shuffle: videos only</button>
           <button type="button" id="btn-open-people" class="secondary">People</button>
-          <button type="button" id="btn-rebuild-thumbs" class="secondary">Rebuild missing previews</button>
+          <button type="button" id="btn-rebuild-thumbs" class="secondary">Rebuild broken previews</button>
           <span id="rebuild-thumbs-status" class="hint"></span>
           <button id="btn-lock">Sign out</button>
         </div>
@@ -1567,7 +1567,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-09c hover-stream-thumb-rebuild";
+var GHOSTDRIVE_BUILD = "2026-09-09d black-thumbnail-fix";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -3158,35 +3158,105 @@ function makeThumbnail(file, kind) {
       });
   }
   if (kind === "video") {
-    return new Promise(function (resolve, reject) {
+    /* 0.1 seconds in is very nearly the worst place to grab a thumbnail,
+       and it is where this used to grab one. Anything that fades in, or was
+       exported with a black leader, yields a frame whose every pixel is
+       zero -- measured on a real library, 24 of 351 video thumbnails were
+       literally pure black. So sample a few points through the clip and
+       keep the brightest frame, stopping early the moment one is clearly a
+       real picture (which is the common case, so most videos still cost
+       exactly one seek). If the whole clip genuinely is dark, the brightest
+       of what we saw is still better than frame zero. */
+    var SAMPLE_FRACTIONS = [0.1, 0.3, 0.5, 0.75];
+    var GOOD_ENOUGH_LUMA = 10; // 0-255; above this it is a picture, not a black frame
+    return new Promise(function (resolve) {
       var settled = false;
       var video = document.createElement("video");
       video.preload = "metadata";
       video.muted = true;
+      video.playsInline = true;
       video.src = URL.createObjectURL(file);
-      function cleanup() { URL.revokeObjectURL(video.src); }
-      function finish(fn, arg) { if (settled) return; settled = true; clearTimeout(giveUpTimer); cleanup(); fn(arg); }
+      var duration = null;
+      var vidW = null, vidH = null;
+      var best = null; // { blob, luma }
+      var at = 0;
+
+      function cleanup() { try { URL.revokeObjectURL(video.src); } catch (e) {} }
+      function finishWithBest() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(giveUpTimer);
+        cleanup();
+        resolve(best
+          ? { blob: best.blob, duration: duration, width: vidW, height: vidH }
+          : { blob: null, duration: duration, width: null, height: null });
+      }
       // Some real-world video files never fire loadeddata or error at all
       // (an unsupported codec/container Chrome doesn't even try to report,
       // a detached element that never gets scheduled, etc). Without a
       // timeout that leaves this promise pending forever, which is exactly
       // what silently hangs the whole upload -- so give up on a thumbnail
-      // rather than block the upload on one.
-      var giveUpTimer = setTimeout(function () { finish(resolve, { blob: null, duration: null, width: null, height: null }); }, 8000);
+      // rather than block the upload on one. Now that several seeks may be
+      // involved this is a little more generous, and it hands back the best
+      // frame found so far rather than nothing.
+      var giveUpTimer = setTimeout(finishWithBest, 15000);
+
+      function captureFrame() {
+        var scale = Math.min(1, MAX / Math.max(video.videoWidth, video.videoHeight));
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.round(video.videoWidth * scale) || MAX;
+        canvas.height = Math.round(video.videoHeight * scale) || MAX;
+        var ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        var pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        // Every 16th pixel is plenty to tell a black frame from a dark shot.
+        var total = 0, counted = 0;
+        for (var i = 0; i < pixels.length; i += 4 * 16) {
+          total += 0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2];
+          counted++;
+        }
+        var luma = counted ? total / counted : 0;
+        return new Promise(function (res) {
+          canvas.toBlob(function (blob) { res({ blob: blob, luma: luma }); }, "image/jpeg", 0.8);
+        });
+      }
+
+      function considerAndContinue(shot) {
+        if (shot && shot.blob && (!best || shot.luma > best.luma)) best = shot;
+        if (best && best.luma >= GOOD_ENOUGH_LUMA) return finishWithBest();
+        tryNextSample();
+      }
+
+      function tryNextSample() {
+        if (settled) return;
+        if (!duration || at >= SAMPLE_FRACTIONS.length) return finishWithBest();
+        var target = Math.min(duration * SAMPLE_FRACTIONS[at], Math.max(0, duration - 0.1));
+        at++;
+        var onSeeked = function () {
+          video.removeEventListener("seeked", onSeeked);
+          if (settled) return;
+          captureFrame().then(considerAndContinue).catch(function () { tryNextSample(); });
+        };
+        video.addEventListener("seeked", onSeeked);
+        try { video.currentTime = target; }
+        catch (e) { video.removeEventListener("seeked", onSeeked); finishWithBest(); }
+      }
+
       video.addEventListener("loadeddata", function () {
-        try {
-          var duration = isFinite(video.duration) ? video.duration : null;
-          var scale = Math.min(1, MAX / Math.max(video.videoWidth, video.videoHeight));
-          var canvas = document.createElement("canvas");
-          canvas.width = Math.round(video.videoWidth * scale) || MAX;
-          canvas.height = Math.round(video.videoHeight * scale) || MAX;
-          var ctx = canvas.getContext("2d");
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob(function (b) { finish(resolve, { blob: b, duration: duration, width: video.videoWidth, height: video.videoHeight }); }, "image/jpeg", 0.8);
-        } catch (e) { finish(reject, e); }
+        if (settled) return;
+        duration = isFinite(video.duration) ? video.duration : null;
+        vidW = video.videoWidth; vidH = video.videoHeight;
+        // No usable duration means nothing to seek within -- take the frame
+        // that is already showing rather than nothing at all.
+        if (!duration) return captureFrame().then(function (shot) {
+          if (shot && shot.blob) best = shot;
+          finishWithBest();
+        }).catch(finishWithBest);
+        tryNextSample();
       });
-      video.addEventListener("error", function () { finish(reject, new Error("video decode failed")); });
-      video.currentTime = 0.1;
+      // An error after we already have a frame should still hand that frame
+      // back; an error before means no thumbnail, but never a failed upload.
+      video.addEventListener("error", finishWithBest);
     });
   }
   return Promise.resolve({ blob: null, duration: null, width: null, height: null });
@@ -6351,63 +6421,124 @@ $("#person-select").addEventListener("change", function (e) { currentPerson = e.
    they stand today. */
 var REBUILD_THUMB_MAX_BYTES = 300 * 1024 * 1024;
 
+/* Is this thumbnail an all-black frame? Grabbing a video thumbnail at 0.1
+   seconds -- which is what every existing item was built with -- produces a
+   literally-zero-pixels image for any clip that fades in or was exported
+   with a black leader. Those rows have a perfectly valid thumbnail_path, so
+   "rebuild the ones with no thumbnail" walks straight past them; they have
+   to be found by looking at the pixels. Brightest-pixel rather than mean,
+   so a genuinely dark-but-real night shot is left alone. */
+function thumbnailLooksBlack(url) {
+  return new Promise(function (resolve) {
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var canvas = document.createElement("canvas");
+        canvas.width = 24; canvas.height = 24;
+        var ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, 24, 24);
+        var pixels = ctx.getImageData(0, 0, 24, 24).data;
+        var brightest = 0;
+        for (var i = 0; i < pixels.length; i += 4) {
+          var luma = 0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2];
+          if (luma > brightest) brightest = luma;
+        }
+        resolve(brightest < 8);
+      } catch (e) { resolve(false); }
+    };
+    img.onerror = function () { resolve(false); };
+    img.src = url;
+  });
+}
+
+/* Thumbnails are generated exactly once, at upload, from whatever the
+   browser could decode at that moment and from whichever frame it happened
+   to grab. So a library accumulates two kinds of broken preview: items with
+   no thumbnail at all (every HEIC uploaded outside Safari, every RAW whose
+   embedded preview couldn't be found) and items whose thumbnail is a black
+   frame. Improving the decoders and the frame-picking does nothing for
+   either, because nothing ever revisits those rows. This does. */
 function rebuildMissingThumbnails() {
   var btn = $("#btn-rebuild-thumbs");
   var status = $("#rebuild-thumbs-status");
   btn.disabled = true;
-  status.textContent = "Looking for items without a preview…";
-  return sb.from("objects").select("*").eq("user_id", state.userId).is("thumbnail_path", null).then(function (res) {
+  status.textContent = "Checking previews…";
+  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
     if (res.error) throw res.error;
-    var records = res.data || [];
-    if (!records.length) {
-      status.textContent = "Every item already has a preview.";
-      btn.disabled = false;
-      return;
-    }
-    var at = 0, built = 0, failed = 0, skipped = 0;
-    function finish() {
-      var parts = ["Built " + built + " preview" + (built === 1 ? "" : "s")];
-      if (failed) parts.push(failed + " couldn't be decoded");
-      if (skipped) parts.push(skipped + " too large to rebuild");
-      status.textContent = parts.join(", ") + ".";
-      btn.disabled = false;
-      refreshGallery();
-    }
-    function step() {
-      if (at >= records.length) return finish();
-      var record = records[at];
-      status.textContent = "Building previews… " + (at + 1) + " of " + records.length;
-      var loaded;
-      // One undecryptable row must not take the whole pass down with it.
-      try { loaded = loadObjectMeta(record); }
-      catch (e) { failed++; at++; return step(); }
-      if ((loaded.metaJson.size || 0) > REBUILD_THUMB_MAX_BYTES) { skipped++; at++; return step(); }
-      downloadObjectContent(record, loaded.fileKey, loaded.metaJson).then(function (blob) {
-        // makeThumbnail branches on the filename for its HEIC fallback, so
-        // the blob has to carry the original name, not an anonymous one.
-        var named = new File([blob], loaded.metaJson.name || ("file." + (loaded.metaJson.ext || "bin")),
-          { type: loaded.metaJson.mime || "" });
-        return makeThumbnail(named, record.kind);
-      }).then(function (result) {
-        if (!result || !result.blob) { failed++; at++; return step(); }
-        var thumbPath = state.userId + "/" + record.id + "/thumb";
-        return result.blob.arrayBuffer().then(function (thumbBytes) {
-          return r2PutSmall(thumbPath, encryptChunkFrame(loaded.fileKey, new Uint8Array(thumbBytes)));
-        }).then(function () {
-          // Dimensions are what the justified grid lays tiles out from, so
-          // record them while we finally have them.
-          var patchedMeta = Object.assign({}, loaded.metaJson,
-            (result.width && result.height) ? { width: result.width, height: result.height } : {});
-          var encryptedMetadata = toB64(encryptBytes(loaded.fileKey, new TextEncoder().encode(JSON.stringify(patchedMeta))));
-          return sb.from("objects").update({ thumbnail_path: thumbPath, encrypted_metadata: encryptedMetadata }).eq("id", record.id);
-        }).then(function (updateRes) {
-          if (updateRes && updateRes.error) throw updateRes.error;
-          thumbUrlCache.delete(record.id);
-          built++; at++; step();
+    var all = res.data || [];
+    var todo = [];
+    var checked = 0;
+
+    function screen() {
+      if (checked >= all.length) return run();
+      var record = all[checked];
+      status.textContent = "Checking previews… " + (checked + 1) + " of " + all.length;
+      if (!record.thumbnail_path) { todo.push(record); checked++; return screen(); }
+      loadThumbnail(record).then(function (url) {
+        if (!url) { todo.push(record); checked++; return screen(); }
+        return thumbnailLooksBlack(url).then(function (isBlack) {
+          if (isBlack) todo.push(record);
+          checked++; screen();
         });
-      }).catch(function () { failed++; at++; step(); });
+      }).catch(function () { checked++; screen(); });
     }
-    step();
+
+    function run() {
+      if (!todo.length) {
+        status.textContent = "Every preview already looks fine.";
+        btn.disabled = false;
+        return;
+      }
+      var at = 0, built = 0, failed = 0, skipped = 0;
+      function finish() {
+        var parts = ["Rebuilt " + built + " preview" + (built === 1 ? "" : "s")];
+        if (failed) parts.push(failed + " couldn't be decoded");
+        if (skipped) parts.push(skipped + " too large to rebuild");
+        status.textContent = parts.join(", ") + ".";
+        btn.disabled = false;
+        refreshGallery();
+      }
+      function step() {
+        if (at >= todo.length) return finish();
+        var record = todo[at];
+        status.textContent = "Rebuilding… " + (at + 1) + " of " + todo.length;
+        var loaded;
+        // One undecryptable row must not take the whole pass down with it.
+        try { loaded = loadObjectMeta(record); }
+        catch (e) { failed++; at++; return step(); }
+        if ((loaded.metaJson.size || 0) > REBUILD_THUMB_MAX_BYTES) { skipped++; at++; return step(); }
+        downloadObjectContent(record, loaded.fileKey, loaded.metaJson).then(function (blob) {
+          // makeThumbnail branches on the filename for its HEIC fallback, so
+          // the blob has to carry the original name, not an anonymous one.
+          var named = new File([blob], loaded.metaJson.name || ("file." + (loaded.metaJson.ext || "bin")),
+            { type: loaded.metaJson.mime || "" });
+          return makeThumbnail(named, record.kind);
+        }).then(function (result) {
+          if (!result || !result.blob) { failed++; at++; return step(); }
+          var thumbPath = record.thumbnail_path || (state.userId + "/" + record.id + "/thumb");
+          return result.blob.arrayBuffer().then(function (thumbBytes) {
+            return r2PutSmall(thumbPath, encryptChunkFrame(loaded.fileKey, new Uint8Array(thumbBytes)));
+          }).then(function () {
+            // Dimensions are what the justified grid lays tiles out from, and
+            // duration feeds the feed ranking -- record both now that we
+            // finally have them.
+            var patch = {};
+            if (result.width && result.height) { patch.width = result.width; patch.height = result.height; }
+            if (result.duration) patch.duration = result.duration;
+            var patchedMeta = Object.assign({}, loaded.metaJson, patch);
+            var encryptedMetadata = toB64(encryptBytes(loaded.fileKey, new TextEncoder().encode(JSON.stringify(patchedMeta))));
+            return sb.from("objects").update({ thumbnail_path: thumbPath, encrypted_metadata: encryptedMetadata }).eq("id", record.id);
+          }).then(function (updateRes) {
+            if (updateRes && updateRes.error) throw updateRes.error;
+            thumbUrlCache.delete(record.id);
+            built++; at++; step();
+          });
+        }).catch(function () { failed++; at++; step(); });
+      }
+      step();
+    }
+
+    screen();
   }).catch(function (err) {
     status.textContent = "Couldn't rebuild previews: " + friendlyError(err);
     btn.disabled = false;
