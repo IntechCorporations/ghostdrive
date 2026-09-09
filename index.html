@@ -121,7 +121,7 @@
     .header-actions { width: 100%; justify-content: space-between; }
     .header-actions .upload-btn { order: -1; flex: 1 1 100%; }
     .header-actions .upload-btn button { width: 100%; }
-    #btn-import-google-photos, #btn-open-reels { flex: 1 1 auto; }
+    #btn-import-google-photos, #btn-open-reels, #btn-open-reels-video { flex: 1 1 auto; }
     .toolbar { padding: 10px 16px; }
     .toolbar-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
     .toolbar-controls > div { width: 100%; }
@@ -133,7 +133,7 @@
   }
   @media (max-width: 460px) {
     .card { padding: 26px 22px; }
-    #btn-import-google-photos, #btn-open-reels { font-size: 12.5px; padding: 10px 12px; }
+    #btn-import-google-photos, #btn-open-reels, #btn-open-reels-video { font-size: 12.5px; padding: 10px 12px; }
   }
 
   /* Touch devices get bigger targets across the board -- this doesn't
@@ -441,6 +441,9 @@
   .crop-handle[data-handle="se"] { bottom: 0; right: 0; margin-right: -7px; margin-bottom: -7px; cursor: nwse-resize; }
   .crop-actions { display: flex; gap: 10px; justify-content: center; margin-top: 14px; }
   .crop-actions.hidden { display: none; }
+  /* Feed-side edit controls, stacked under the like/dislike column. */
+  .reels-actions { position: absolute; right: 12px; bottom: 168px; z-index: 5; display: flex; flex-direction: column; gap: 10px; }
+  .reels-actions .reels-danger:hover { background: var(--danger); color: #fff; }
   .crop-actions .crop-rotate { display: inline-flex; align-items: center; justify-content: center; padding: 11px 14px; }
   .crop-actions .crop-rotate svg { width: 16px; height: 16px; flex: 0 0 auto; display: block; }
 
@@ -705,7 +708,8 @@
           </label>
           <button type="button" id="btn-choose-files-resumable" class="secondary hidden" title="Large videos added this way keep uploading even if you close this tab (Chrome/Edge only)">+ Add large files (resumable)</button>
           <button type="button" id="btn-import-google-photos" class="secondary">Import from Google Photos</button>
-          <button type="button" id="btn-open-reels" class="secondary">&#9654; Shuffle feed</button>
+          <button type="button" id="btn-open-reels" class="secondary">&#9654; Shuffle: photos + videos</button>
+          <button type="button" id="btn-open-reels-video" class="secondary">&#9654; Shuffle: videos only</button>
           <button type="button" id="btn-open-people" class="secondary">People</button>
           <button id="btn-lock">Sign out</button>
         </div>
@@ -910,6 +914,7 @@
   <button type="button" id="btn-reels-close" class="reels-icon-btn reels-close" title="Close (Esc)">&times;</button>
   <div class="reels-top-controls">
     <button type="button" id="btn-reels-shuffle" class="reels-icon-btn" title="Shuffle"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg></button>
+    <button type="button" id="btn-reels-autoadvance" class="reels-icon-btn" title="Auto-advance to the next one"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 4 12 10 6 16"/><polyline points="13 4 19 10 13 16"/><line x1="4" y1="20" x2="20" y2="20"/></svg></button>
     <button type="button" id="btn-reels-mute" class="reels-icon-btn" title="Mute"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg></button>
   </div>
   <div class="reels-vnav">
@@ -919,6 +924,10 @@
   <div class="reels-vote">
     <button type="button" id="btn-reels-upvote" class="reels-icon-btn" aria-label="I like this one" title="More like this"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 22V11M2 13v7a2 2 0 0 0 2 2h13.4a2 2 0 0 0 2-1.6l1.4-7A2 2 0 0 0 19 11h-5.5l.9-4.6A2 2 0 0 0 12.5 4L7 11"/></svg></button>
     <button type="button" id="btn-reels-downvote" class="reels-icon-btn" aria-label="Show me less of this" title="Less like this"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="transform: scale(-1)"><path d="M7 22V11M2 13v7a2 2 0 0 0 2 2h13.4a2 2 0 0 0 2-1.6l1.4-7A2 2 0 0 0 19 11h-5.5l.9-4.6A2 2 0 0 0 12.5 4L7 11"/></svg></button>
+  </div>
+  <div class="reels-actions">
+    <button type="button" id="btn-reels-crop" class="reels-icon-btn hidden" title="Crop this one" aria-label="Crop this one"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg></button>
+    <button type="button" id="btn-reels-delete" class="reels-icon-btn reels-danger" title="Delete this one" aria-label="Delete this one"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
   </div>
   <div id="reels-info" class="reels-info"></div>
   <div class="reels-seekbar-wrap" id="reels-seekbar-wrap">
@@ -1536,7 +1545,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-08e raw-edits-save-as-new-jpeg";
+var GHOSTDRIVE_BUILD = "2026-09-09a raw-sof-fix-split-feeds-autoadvance";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -2462,8 +2471,31 @@ function processExpandedFiles(files) {
   if (!files.length) return;
   var i = 0;
   uploadsInFlight += files.length; // whole batch counts as "in flight" until every file settles
+  /* Per-file progress bars say how far along ONE transfer is; they say
+     nothing about how much of the batch is left, which is the thing you
+     actually want to know when you drop 40 photos in at once. This counts
+     the batch itself. Only shown for real batches -- a single file already
+     has a row of its own in the tray. */
+  var batchTotal = files.length;
+  var batchDone = 0;
+  var batchStatusEl = $("#upload-status");
+  function renderBatchProgress(finished) {
+    if (batchTotal < 2) return;
+    if (!finished) {
+      batchStatusEl.textContent = batchDone + " of " + batchTotal + " uploaded";
+      return;
+    }
+    batchStatusEl.textContent = batchDone === batchTotal
+      ? batchTotal + " of " + batchTotal + " uploaded"
+      : batchDone + " of " + batchTotal + " uploaded — the rest didn't go through (see upload log)";
+    var settledText = batchStatusEl.textContent;
+    setTimeout(function () {
+      if (batchStatusEl.textContent === settledText) batchStatusEl.textContent = "";
+    }, 8000);
+  }
+  renderBatchProgress(false);
   function next() {
-    if (i >= files.length) return;
+    if (i >= files.length) { renderBatchProgress(true); return; }
     var file = files[i];
     var id = newUploadId();
     reportUploadStart(id, file.name);
@@ -2481,6 +2513,7 @@ function processExpandedFiles(files) {
       .then(function () {
         reportUploadDone(id, null);
         logUploadResult(file.name, file.size, true, null);
+        batchDone++;
         refreshGallery();
       })
       .catch(function (err) {
@@ -2499,6 +2532,7 @@ function processExpandedFiles(files) {
         uploadsInFlight--;
         maybeFinishPendingSignOut();
         i++;
+        renderBatchProgress(false);
         next();
       });
   }
@@ -2811,6 +2845,41 @@ function formatDuration(sec) {
    Virtually every RAW file embeds at least one sizable JPEG somewhere for
    the camera's own LCD/preview, and that byte-level marker is the same
    regardless of which manufacturer or maker-note format wraps it. */
+/* Walks one embedded JPEG's marker segments and returns its start-of-frame
+   marker, which is what says how the image is actually coded. */
+function embeddedJpegSof(bytes, start, length) {
+  var p = start + 2;
+  var limit = Math.min(start + length, bytes.length);
+  while (p < limit - 3) {
+    if (bytes[p] !== 0xFF) { p++; continue; }
+    var marker = bytes[p + 1];
+    // Standalone markers -- no length word follows these.
+    if (marker === 0xD8 || marker === 0x01 || marker === 0xFF || (marker >= 0xD0 && marker <= 0xD7)) { p += 2; continue; }
+    // Start-of-frame is anything in C0..CF except DHT (C4), JPG (C8) and
+    // DAC (CC), which are tables rather than frame headers.
+    if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) return marker;
+    var segment = (bytes[p + 2] << 8) | bytes[p + 3];
+    if (segment < 2) return null; // malformed -- bail rather than loop forever
+    p += 2 + segment;
+  }
+  return null;
+}
+
+/* Baseline, extended sequential, and progressive. These are the three a
+   browser will actually decode; everything else in the C0..CF range is
+   lossless, arithmetic-coded, differential or hierarchical, and an <img>
+   pointed at one renders nothing. */
+var BROWSER_DECODABLE_SOF = [0xC0, 0xC1, 0xC2];
+
+/* Returns the largest embedded JPEG THE BROWSER CAN DECODE -- which is not
+   the same thing as the largest one, and the difference is the whole bug.
+   A Canon CR2 stores its raw sensor data as a lossless JPEG (SOF3), and on
+   a real 28MB file that stream is 24.7MB, while the genuine full-size
+   preview sitting beside it is 2.4MB and the IFD1 thumbnail is 15KB.
+   Taking the biggest span therefore handed an <img> the raw sensor data:
+   it parsed the header, reported 1448x3804 (the raw tile layout, not a
+   picture), and drew absolutely nothing. Checking the frame marker first
+   is what tells those apart. */
 function scanForLargestEmbeddedJpeg(arrayBuffer) {
   var bytes = new Uint8Array(arrayBuffer);
   var best = null;
@@ -2824,7 +2893,11 @@ function scanForLargestEmbeddedJpeg(arrayBuffer) {
         j++;
       }
       if (end === -1) break; // no closing marker found from here on -- nothing more to scan
-      if (!best || (end - i) > best.length) best = { start: i, length: end - i };
+      var length = end - i;
+      if ((!best || length > best.length) &&
+          BROWSER_DECODABLE_SOF.indexOf(embeddedJpegSof(bytes, i, length)) !== -1) {
+        best = { start: i, length: length };
+      }
       i = end;
       continue;
     }
@@ -6318,11 +6391,15 @@ function loadReelMedia(id, onProgress) {
 var REELS_PREWARM_COUNT = 2;
 var reelsPrewarmPromise = null;
 
-function loadReelsIndex() {
-  // Photos ride in the same feed as videos -- one shuffled stream of
-  // everything, ranked by the same engagement math, rather than two
-  // separate feeds that each know only half of what you actually watch.
-  return sb.from("objects").select("*").eq("user_id", state.userId).in("kind", ["video", "photo"]).then(function (res) {
+/* mode "all" = photos and videos in one stream; mode "video" = videos
+   only. Both are ranked by the same engagement math and both write back to
+   the same per-item engagement records, so watching in one feed still
+   informs the ordering of the other -- it is the same library seen through
+   two different filters, not two feeds each knowing half the story. */
+function loadReelsIndex(mode) {
+  mode = mode === "video" ? "video" : "all";
+  var kinds = mode === "video" ? ["video"] : ["video", "photo"];
+  return sb.from("objects").select("*").eq("user_id", state.userId).in("kind", kinds).then(function (res) {
     if (res.error) throw res.error;
     var recordsById = new Map();
     var items = (res.data || []).map(function (record) {
@@ -6341,6 +6418,7 @@ function loadReelsIndex() {
     reelsState.order = weightedShuffleByEngagement(order);
     reelsState.shuffled = true;
     reelsState.index = 0;
+    reelsState.mode = mode;
     return order;
   });
 }
@@ -6348,9 +6426,11 @@ function loadReelsIndex() {
 // Called in the background once the vault is open -- never blocks anything,
 // and quietly does nothing if it fails (a failed prewarm should never keep
 // the button from working; openReels just does the work itself instead).
+var reelsPrewarmMode = null;
 function prewarmReels() {
   if (reelsPrewarmPromise) return reelsPrewarmPromise;
-  reelsPrewarmPromise = loadReelsIndex().then(function (order) {
+  reelsPrewarmMode = "all";
+  reelsPrewarmPromise = loadReelsIndex("all").then(function (order) {
     order.slice(0, REELS_PREWARM_COUNT).forEach(function (id) {
       loadReelMedia(id).catch(function () {}); // fills the same cache showReelAt() reads from
     });
@@ -6363,13 +6443,18 @@ function prewarmReels() {
   return reelsPrewarmPromise;
 }
 
-function openReels() {
-  // If the prewarm already finished, this resolves instantly with the feed
-  // fully staged -- the common case, and why the feed opens straight into
-  // playback. Otherwise it does (or waits on) the same work now.
-  var ready = reelsPrewarmPromise || loadReelsIndex();
+function openReels(mode) {
+  mode = mode === "video" ? "video" : "all";
+  // The prewarm stages the mixed feed. Opening that one resolves instantly
+  // with everything already staged -- the common case, and why the feed
+  // opens straight into playback. Asking for a different mode than what was
+  // staged means building that one now instead of showing the wrong set.
+  var ready = (reelsPrewarmPromise && reelsPrewarmMode === mode)
+    ? reelsPrewarmPromise
+    : loadReelsIndex(mode);
   ready.then(function (order) {
     $("#btn-reels-shuffle").classList.add("active");
+    renderReelsAutoAdvanceUI();
     showModal("#reels-modal");
     $("#reels-empty").classList.toggle("hidden", order.length > 0);
     if (!order.length) {
@@ -6438,6 +6523,7 @@ function reelsStartPhotoTimer(id) {
     if (reelsPhoto.elapsed >= REELS_PHOTO_SECONDS) {
       recordReelCompletion(id);
       reelsPhoto.elapsed = 0;
+      if (reelsAutoAdvance) { reelsStopPhotoTimer(); reelsNext(); return; }
     }
     reelsUpdateSeekUI(reelsPhoto.elapsed / REELS_PHOTO_SECONDS, reelsPhoto.elapsed, REELS_PHOTO_SECONDS);
   }, 200);
@@ -6469,6 +6555,12 @@ function showReelAt(i) {
   photo.style.transition = "none";
   photo.style.transform = "translateY(0)";
   video.playbackRate = 1;
+  // Looping and auto-advancing are mutually exclusive: a looping <video>
+  // never fires "ended", which is exactly the event auto-advance needs.
+  video.loop = !reelsAutoAdvance;
+  // Crop only means something for a still -- a video gets trim, in the
+  // viewer, not here.
+  $("#btn-reels-crop").classList.toggle("hidden", !isPhoto);
   video.classList.toggle("hidden", isPhoto);
   photo.classList.toggle("hidden", !isPhoto);
   if (isPhoto) {
@@ -6555,9 +6647,81 @@ function closeReels() {
   reelsSeekDrag = null;
 }
 
-$("#btn-open-reels").addEventListener("click", openReels);
+$("#btn-open-reels").addEventListener("click", function () { openReels("all"); });
+$("#btn-open-reels-video").addEventListener("click", function () { openReels("video"); });
 $("#btn-reels-close").addEventListener("click", closeReels);
 $("#btn-reels-next").addEventListener("click", reelsNext);
+
+/* Auto-advance: when a video ends or a photo's dwell window runs out, move
+   to the next one instead of sitting on the same item. On by default --
+   that is what makes it feel like a feed rather than a slideshow you have
+   to nudge. The toggle stays because there are moments you want a clip to
+   just keep repeating. */
+var reelsAutoAdvance = true;
+function renderReelsAutoAdvanceUI() {
+  $("#btn-reels-autoadvance").classList.toggle("active", reelsAutoAdvance);
+  $("#btn-reels-autoadvance").title = reelsAutoAdvance
+    ? "Auto-advance is on — tap to loop this one instead"
+    : "Auto-advance is off — tap to move on automatically";
+  $("#reels-video").loop = !reelsAutoAdvance;
+}
+$("#btn-reels-autoadvance").addEventListener("click", function () {
+  reelsAutoAdvance = !reelsAutoAdvance;
+  renderReelsAutoAdvanceUI();
+});
+
+/* Crop hands off to the full editor rather than rebuilding the crop
+   overlay inside the feed. reenterCropForId is the same mechanism the
+   rotate button uses to land back in crop after a reload, so the viewer
+   opens straight into crop mode on this item -- one tap from the feed to
+   dragging crop handles. */
+$("#btn-reels-crop").addEventListener("click", function () {
+  var id = (reelsState.order || [])[reelsState.index];
+  if (!id) return;
+  reenterCropForId = id;
+  closeReels();
+  openViewer(id);
+});
+
+$("#btn-reels-delete").addEventListener("click", function () {
+  var order = reelsState.order || [];
+  var id = order[reelsState.index];
+  if (!id) return;
+  if (!confirm("Delete this permanently?")) return;
+  var btn = $("#btn-reels-delete");
+  btn.disabled = true;
+  $("#reels-video").pause();
+  reelsPausePhotoTimer();
+  sb.from("objects").select("*").eq("id", id).maybeSingle().then(function (res) {
+    if (res.error) throw res.error;
+    var record = res.data;
+    if (!record) return null;
+    var paths = [record.content_path];
+    if (record.thumbnail_path) paths.push(record.thumbnail_path);
+    return Promise.all(paths.map(function (path) { return r2Delete(path).catch(function () {}); }));
+  }).then(function () {
+    return sb.from("objects").delete().eq("id", id);
+  }).then(function (res) {
+    if (res && res.error) throw res.error;
+    btn.disabled = false;
+    // Drop it from the running order too, or the feed tries to load bytes
+    // that no longer exist the next time it wraps back around to this slot.
+    reelsState.order = order.filter(function (x) { return x !== id; });
+    if (reelsState.originalOrder) {
+      reelsState.originalOrder = reelsState.originalOrder.filter(function (x) { return x !== id; });
+    }
+    if (reelsState.records && reelsState.records.delete) reelsState.records.delete(id);
+    reelsPrewarmPromise = null; // the staged feed now references a deleted item
+    refreshGallery();
+    if (!reelsState.order.length) { closeReels(); return; }
+    // Whatever slid into this slot is the natural next thing to show.
+    showReelAt(Math.min(reelsState.index, reelsState.order.length - 1));
+  }).catch(function (err) {
+    btn.disabled = false;
+    reelsResumePhotoTimer();
+    alert("Couldn't delete this one: " + friendlyError(err));
+  });
+});
 $("#btn-reels-prev").addEventListener("click", reelsPrev);
 
 var reelsSuppressNextClick = false;
@@ -6762,9 +6926,17 @@ $("#reels-video").addEventListener("seeked", function () {
   if (reelsSeekDrag) reelsDrawScrubFrame();
   reelsState.lastTickTime = null; // a seek isn't watched time -- don't count the jump
 });
-// No "ended" listener here on purpose: the element is set to loop, and a
-// looping <video> never fires it. Completions are detected as the playhead
-// wrapping around, in the timeupdate handler above.
+/* With auto-advance ON the element is not looping, so "ended" fires for
+   real and is the natural place to bank the completion and move on. With
+   it OFF the element loops and never fires this at all -- the wrap-around
+   detection in the timeupdate handler above stays the thing that counts
+   completions in that mode. Both paths exist because neither alone covers
+   both settings. */
+$("#reels-video").addEventListener("ended", function () {
+  if (!reelsAutoAdvance) return;
+  recordReelCompletion(reelsState.order[reelsState.index]);
+  reelsNext();
+});
 
 var reelsSeekDrag = null; // { pointerId, wasPlaying }
 function reelsSeekFraction(clientX) {
