@@ -336,10 +336,24 @@
      photo viewer works. */
   #viewer-media.zoomed { overflow: auto; max-height: 88vh; cursor: zoom-out; align-items: flex-start; }
   #viewer-media.zoom-ready img { cursor: zoom-in; }
-  .modal-content.media-mode #viewer-media.zoomed img {
+  .modal-content.media-mode #viewer-media.zoomed img,
+  .modal-content.media-mode #viewer-media.zoomed video {
     max-width: none; max-height: none; border-radius: 0;
-    transform: scale(2.5); transform-origin: top left;
+    transform: scale(var(--viewer-zoom, 2.5)); transform-origin: top left;
   }
+  /* Zoom controls sit top-LEFT on purpose: the top-right row is already
+     eight buttons deep, and two more there runs straight off the side of a
+     phone. */
+  .viewer-zoom-controls { display: none; position: absolute; top: 12px; left: 14px; z-index: 3; gap: 8px; }
+  .modal-content.media-mode .viewer-zoom-controls { display: flex; }
+  .viewer-zoom-btn {
+    background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; height: 34px; padding: 0 12px;
+    border-radius: 17px; display: flex; align-items: center; justify-content: center; cursor: pointer;
+    font: 600 12px var(--mono); white-space: nowrap;
+  }
+  .viewer-zoom-btn:hover { background: var(--brass); color: #1c1406; }
+  .viewer-zoom-btn.active { background: var(--brass); color: #1c1406; }
+  .viewer-zoom-btn svg { width: 16px; height: 16px; flex: 0 0 auto; display: block; }
   .modal-content.media-mode .viewer-meta { display: none; }
   .modal-content.media-mode #viewer-media { margin: 0; }
   .viewer-video-delete {
@@ -711,6 +725,8 @@
           <button type="button" id="btn-open-reels" class="secondary">&#9654; Shuffle: photos + videos</button>
           <button type="button" id="btn-open-reels-video" class="secondary">&#9654; Shuffle: videos only</button>
           <button type="button" id="btn-open-people" class="secondary">People</button>
+          <button type="button" id="btn-rebuild-thumbs" class="secondary">Rebuild missing previews</button>
+          <span id="rebuild-thumbs-status" class="hint"></span>
           <button id="btn-lock">Sign out</button>
         </div>
       </header>
@@ -780,6 +796,12 @@
     <div class="modal-backdrop"></div>
     <div class="modal-content">
       <button class="modal-close" id="btn-viewer-close">&times;</button>
+      <div class="viewer-zoom-controls">
+        <button type="button" id="btn-viewer-zoom" class="viewer-zoom-btn" title="Zoom" aria-label="Zoom level">1&#215;</button>
+        <button type="button" id="btn-viewer-zoom-lock" class="viewer-zoom-btn" title="Lock zoom" aria-label="Lock zoom">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        </button>
+      </div>
       <button class="modal-nav modal-prev" id="btn-viewer-prev" aria-label="Previous">&#8249;</button>
       <button class="modal-nav modal-next" id="btn-viewer-next" aria-label="Next">&#8250;</button>
       <button class="viewer-video-delete" id="btn-viewer-delete-video" title="Delete" aria-label="Delete">
@@ -1545,7 +1567,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-09a raw-sof-fix-split-feeds-autoadvance";
+var GHOSTDRIVE_BUILD = "2026-09-09c hover-stream-thumb-rebuild";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -3110,14 +3132,28 @@ function makeThumbnail(file, kind) {
       return bitmapToJpegBlob(bitmap, MAX).then(function (blob) { return { blob: blob, duration: null, width: bitmap.width, height: bitmap.height }; });
     })
       .catch(function () {
-        // Most likely a RAW file (or another format this browser can't
-        // decode) -- fall back to its embedded EXIF preview instead of
-        // leaving it with no thumbnail at all.
+        // Neither RAW nor HEIC decodes in createImageBitmap, and they need
+        // different rescues: RAW carries an embedded JPEG preview, while
+        // HEIC generally does not and needs the real decoder. Without that
+        // second fallback every HEIC uploaded outside Safari ended up with
+        // no thumbnail at all -- a blank tile forever, since thumbnails are
+        // only ever generated once, at upload.
         return extractEmbeddedPreview(file).then(function (previewBlob) {
-          if (!previewBlob) return { blob: null, duration: null, width: null, height: null };
-          return createImageBitmap(previewBlob)
-            .then(function (bitmap) { return bitmapToJpegBlob(bitmap, MAX).then(function (blob) { return { blob: blob, duration: null, width: bitmap.width, height: bitmap.height }; }); })
-            .catch(function () { return { blob: null, duration: null, width: null, height: null }; });
+          if (!previewBlob) return null;
+          return createImageBitmap(previewBlob).catch(function () { return null; });
+        }).then(function (bitmap) {
+          if (bitmap) return bitmap;
+          // Gate on the extension so an unrelated undecodable file doesn't
+          // pull down a megabyte of WASM for nothing.
+          if (!/\.(heic|heif)$/.test((file.name || "").toLowerCase())) return null;
+          return decodeHeicToBlob(file)
+            .then(function (decoded) { return decoded ? createImageBitmap(decoded.blob) : null; })
+            .catch(function () { return null; });
+        }).then(function (bitmap) {
+          if (!bitmap) return { blob: null, duration: null, width: null, height: null };
+          return bitmapToJpegBlob(bitmap, MAX).then(function (blob) {
+            return { blob: blob, duration: null, width: bitmap.width, height: bitmap.height };
+          });
         });
       });
   }
@@ -4576,6 +4612,39 @@ function galleryPreviewEvictIfNeeded() {
   }
 }
 
+/* What a hover should actually play.
+   Downloading the entire file to a blob -- which is what this used to do
+   for every video -- is fine for a 20MB clip and hopeless for the
+   multi-gigabyte ones in a real library: the hover is long over before the
+   download is, so those tiles simply never played. Content is stored
+   unencrypted precisely so a <video> can stream it with its own range
+   requests, which is exactly what the viewer already does for big files. A
+   hover wants the same thing and even less of it.
+   Preference order: the small app-generated fast preview when one exists,
+   then streaming the original, and only for genuinely encrypted content
+   (older uploads) the original download-to-blob path -- those bytes mean
+   nothing until JS has decrypted them, so there is no streaming option. */
+function galleryHoverSource(record, metaJson) {
+  if (metaJson.hasPreview && metaJson.previewPath) {
+    return Promise.resolve({
+      url: withStreamType(R2_WORKER_URL + "/object?path=" + encodeURIComponent(metaJson.previewPath)
+        + "&auth=" + encodeURIComponent(R2_AUTH_SECRET), "video/mp4"),
+      blob: null,
+    });
+  }
+  if (metaJson.contentEncrypted === false) {
+    return Promise.resolve({
+      url: withStreamType(R2_WORKER_URL + "/object?path=" + encodeURIComponent(record.content_path)
+        + "&auth=" + encodeURIComponent(R2_AUTH_SECRET), streamMediaType(metaJson)),
+      blob: null,
+    });
+  }
+  return startGalleryPreviewLoad(record).then(function (url) {
+    var entry = galleryPreviewCache.get(record.id);
+    return { url: url, blob: entry ? entry.blob : null };
+  });
+}
+
 function startGalleryPreviewLoad(record) {
   var existing = galleryPreviewCache.get(record.id);
   if (existing) return existing.promise;
@@ -4621,6 +4690,11 @@ function queueGalleryPrefetch(record, metaJson) {
   // scrolling a list of them.
   if (currentViewMode !== "grid") return;
   if (galleryPreviewCache.has(record.id)) return;
+  // Anything that will be STREAMED on hover needs no pre-download at all --
+  // prefetching it would download the whole file to build a blob the hover
+  // never looks at.
+  if (metaJson.hasPreview && metaJson.previewPath) return;
+  if (metaJson.contentEncrypted === false) return;
   if ((metaJson.size || 0) > GALLERY_PREVIEW_MAX_PREFETCH_BYTES) return; // hover-only for big files, see note above
   galleryPrefetchQueue.push(record);
   galleryPrefetchPump();
@@ -4644,6 +4718,9 @@ function pickHoverStartFraction(record, fileKey, blob) {
   var doc = loadEngagementDoc(record, fileKey) || blankEngagementDoc();
   var buckets = activeHighlightBuckets(doc);
   if (buckets.length) return Promise.resolve((buckets[0] + 0.5) / doc.n);
+  // A streamed hover has no local bytes to analyse -- start at the top
+  // rather than downloading the file purely to guess a better moment.
+  if (!blob) return Promise.resolve(0);
   return blob.arrayBuffer().then(function (buf) {
     return computePredictedHighlights(record.id, new Uint8Array(buf), doc.n).then(function (result) {
       doc.predicted = result.buckets;
@@ -4668,7 +4745,8 @@ function wireVideoHoverPreview(tile, img, record, metaJson) {
   tile.addEventListener("mouseenter", function () {
     if (currentViewMode !== "grid") return; // list/list-compact keep their static icon, no hover playback
     var myToken = ++hoverToken;
-    startGalleryPreviewLoad(record).then(function (url) {
+    galleryHoverSource(record, metaJson).then(function (source) {
+      var url = source.url;
       if (myToken !== hoverToken) return; // mouse already left before this resolved
       if (!video) {
         video = document.createElement("video");
@@ -4688,9 +4766,8 @@ function wireVideoHoverPreview(tile, img, record, metaJson) {
       video.src = url;
       video.style.display = "block";
       img.style.display = "none";
-      var entry = galleryPreviewCache.get(record.id);
       var fileKey = loadObjectMeta(record).fileKey;
-      var starting = entry && entry.blob ? pickHoverStartFraction(record, fileKey, entry.blob) : Promise.resolve(0);
+      var starting = pickHoverStartFraction(record, fileKey, source.blob);
       starting.then(function (frac) {
         if (myToken !== hoverToken) return;
         function seekAndPlay() {
@@ -5076,7 +5153,11 @@ function openViewer(id) {
 
     var mediaHost = $("#viewer-media");
     mediaHost.innerHTML = "";
-    mediaHost.classList.remove("zoomed", "zoom-ready"); // don't carry zoom state over to the next item
+    // Zoom resets per item unless it's locked -- applyViewerZoom puts the
+    // "zoomed" class back on by itself when the level is still above 1.
+    mediaHost.classList.remove("zoomed", "zoom-ready");
+    if (!viewerZoom.locked) viewerZoom.level = 1;
+    applyViewerZoom();
     // The thumbnail is already sitting in cache (it's what rendered the
     // gallery tile) or loads near-instantly either way -- showing it
     // immediately instead of a blank "Decrypting…" placeholder means
@@ -5283,13 +5364,15 @@ function openViewer(id) {
       if (cropState) return; // don't fight the crop overlay while it's up
       var zoomingIn = !mediaHost.classList.contains("zoomed");
       if (!zoomingIn) {
-        mediaHost.classList.remove("zoomed");
+        setViewerZoom(1); // keeps the level button's label honest
         return;
       }
       var rect = imgEl.getBoundingClientRect();
       var fracX = (e.clientX - rect.left) / rect.width;
       var fracY = (e.clientY - rect.top) / rect.height;
-      mediaHost.classList.add("zoomed");
+      // Click-to-zoom jumps to whatever level is currently selected, so the
+      // button and the click gesture can't disagree about how zoomed it is.
+      setViewerZoom(viewerZoom.level > 1 ? viewerZoom.level : 2.5);
       // Read positions only after the class is applied, so these reflect
       // the zoomed-in dimensions rather than the pre-zoom ones.
       mediaHost.scrollLeft = (imgEl.scrollWidth * fracX) - (mediaHost.clientWidth / 2);
@@ -5366,6 +5449,48 @@ function updateViewerNavButtons() {
   $("#btn-viewer-prev").classList.toggle("hidden", idx <= 0);
   $("#btn-viewer-next").classList.toggle("hidden", idx === -1 || idx >= order.length - 1);
 }
+
+/* Zoom now covers video as well as photos, at a chosen level rather than
+   the single hardcoded 2.5x step, and it can be LOCKED so it survives
+   moving to the next item -- which is the whole point when you're going
+   through a run of clips looking for the same detail in each one. Unlocked
+   it still resets per item, exactly as before.
+   The scale is a CSS variable rather than a fixed value so one setter
+   drives the label, the container's scrollability and the transform
+   together, instead of three places drifting apart. */
+var VIEWER_ZOOM_STEPS = [1, 1.5, 2, 2.5, 3, 4];
+var viewerZoom = { level: 1, locked: false };
+
+function applyViewerZoom() {
+  var host = $("#viewer-media");
+  if (!host) return;
+  host.style.setProperty("--viewer-zoom", String(viewerZoom.level));
+  host.classList.toggle("zoomed", viewerZoom.level > 1);
+  var btn = $("#btn-viewer-zoom");
+  if (btn) {
+    btn.textContent = (viewerZoom.level % 1 === 0 ? String(viewerZoom.level) : viewerZoom.level.toFixed(1)) + "\u00d7";
+    btn.classList.toggle("active", viewerZoom.level > 1);
+  }
+  var lock = $("#btn-viewer-zoom-lock");
+  if (lock) {
+    lock.classList.toggle("active", viewerZoom.locked);
+    lock.title = viewerZoom.locked
+      ? "Zoom stays put when you move to the next one"
+      : "Zoom resets when you move to the next one";
+  }
+}
+function setViewerZoom(level) {
+  viewerZoom.level = level;
+  applyViewerZoom();
+}
+$("#btn-viewer-zoom").addEventListener("click", function () {
+  var i = VIEWER_ZOOM_STEPS.indexOf(viewerZoom.level);
+  setViewerZoom(VIEWER_ZOOM_STEPS[(i + 1) % VIEWER_ZOOM_STEPS.length]);
+});
+$("#btn-viewer-zoom-lock").addEventListener("click", function () {
+  viewerZoom.locked = !viewerZoom.locked;
+  applyViewerZoom();
+});
 
 $("#btn-viewer-prev").addEventListener("click", function () { navigateViewer(-1); });
 $("#btn-viewer-next").addEventListener("click", function () { navigateViewer(1); });
@@ -6217,6 +6342,79 @@ function renderPersonOptions() {
 
 var currentPerson = "";
 $("#person-select").addEventListener("change", function (e) { currentPerson = e.target.value; refreshGallery(); });
+/* Thumbnails are generated exactly once, at upload, from whatever the
+   browser could decode at that moment. So every HEIC uploaded outside
+   Safari, and every RAW whose embedded preview couldn't be found, has no
+   thumbnail at all -- and improving the decoders later does nothing for
+   those rows, because nothing ever revisits them. This walks the library,
+   finds items with no thumbnail, and builds one now using the decoders as
+   they stand today. */
+var REBUILD_THUMB_MAX_BYTES = 300 * 1024 * 1024;
+
+function rebuildMissingThumbnails() {
+  var btn = $("#btn-rebuild-thumbs");
+  var status = $("#rebuild-thumbs-status");
+  btn.disabled = true;
+  status.textContent = "Looking for items without a preview…";
+  return sb.from("objects").select("*").eq("user_id", state.userId).is("thumbnail_path", null).then(function (res) {
+    if (res.error) throw res.error;
+    var records = res.data || [];
+    if (!records.length) {
+      status.textContent = "Every item already has a preview.";
+      btn.disabled = false;
+      return;
+    }
+    var at = 0, built = 0, failed = 0, skipped = 0;
+    function finish() {
+      var parts = ["Built " + built + " preview" + (built === 1 ? "" : "s")];
+      if (failed) parts.push(failed + " couldn't be decoded");
+      if (skipped) parts.push(skipped + " too large to rebuild");
+      status.textContent = parts.join(", ") + ".";
+      btn.disabled = false;
+      refreshGallery();
+    }
+    function step() {
+      if (at >= records.length) return finish();
+      var record = records[at];
+      status.textContent = "Building previews… " + (at + 1) + " of " + records.length;
+      var loaded;
+      // One undecryptable row must not take the whole pass down with it.
+      try { loaded = loadObjectMeta(record); }
+      catch (e) { failed++; at++; return step(); }
+      if ((loaded.metaJson.size || 0) > REBUILD_THUMB_MAX_BYTES) { skipped++; at++; return step(); }
+      downloadObjectContent(record, loaded.fileKey, loaded.metaJson).then(function (blob) {
+        // makeThumbnail branches on the filename for its HEIC fallback, so
+        // the blob has to carry the original name, not an anonymous one.
+        var named = new File([blob], loaded.metaJson.name || ("file." + (loaded.metaJson.ext || "bin")),
+          { type: loaded.metaJson.mime || "" });
+        return makeThumbnail(named, record.kind);
+      }).then(function (result) {
+        if (!result || !result.blob) { failed++; at++; return step(); }
+        var thumbPath = state.userId + "/" + record.id + "/thumb";
+        return result.blob.arrayBuffer().then(function (thumbBytes) {
+          return r2PutSmall(thumbPath, encryptChunkFrame(loaded.fileKey, new Uint8Array(thumbBytes)));
+        }).then(function () {
+          // Dimensions are what the justified grid lays tiles out from, so
+          // record them while we finally have them.
+          var patchedMeta = Object.assign({}, loaded.metaJson,
+            (result.width && result.height) ? { width: result.width, height: result.height } : {});
+          var encryptedMetadata = toB64(encryptBytes(loaded.fileKey, new TextEncoder().encode(JSON.stringify(patchedMeta))));
+          return sb.from("objects").update({ thumbnail_path: thumbPath, encrypted_metadata: encryptedMetadata }).eq("id", record.id);
+        }).then(function (updateRes) {
+          if (updateRes && updateRes.error) throw updateRes.error;
+          thumbUrlCache.delete(record.id);
+          built++; at++; step();
+        });
+      }).catch(function () { failed++; at++; step(); });
+    }
+    step();
+  }).catch(function (err) {
+    status.textContent = "Couldn't rebuild previews: " + friendlyError(err);
+    btn.disabled = false;
+  });
+}
+$("#btn-rebuild-thumbs").addEventListener("click", rebuildMissingThumbnails);
+
 $("#btn-open-people").addEventListener("click", function () {
   renderPeopleList();
   showModal("#people-modal");
