@@ -621,6 +621,36 @@
     font-size: 13px; font-weight: 700; padding: 5px 12px; border-radius: 999px; z-index: 3; letter-spacing: 0.02em;
   }
   .reels-2x-badge.hidden { display: none; }
+  /* Idle fade: everything that isn't the content itself gets out of the
+     way after a few still seconds, and comes straight back on any input.
+     pointer-events go with the opacity, so a tap on faded chrome falls
+     through to the surface underneath -- which is what brings it back. */
+  .reels-overlay.controls-idle .reels-top-controls,
+  .reels-overlay.controls-idle .reels-close,
+  .reels-overlay.controls-idle .reels-vnav,
+  .reels-overlay.controls-idle .reels-vote,
+  .reels-overlay.controls-idle .reels-actions,
+  .reels-overlay.controls-idle .reels-info,
+  .reels-overlay.controls-idle .reels-seekbar-wrap {
+    opacity: 0; pointer-events: none;
+  }
+  .reels-top-controls, .reels-close, .reels-vnav, .reels-vote,
+  .reels-actions, .reels-info, .reels-seekbar-wrap { transition: opacity 0.35s ease; }
+  /* Double-tap seek feedback and the pinch-zoom level, both transient. */
+  .reels-seek-flash {
+    position: absolute; top: 50%; transform: translateY(-50%); z-index: 4; pointer-events: none;
+    background: rgba(20,18,12,0.72); color: #f5f1e6; font: 700 15px var(--mono);
+    padding: 10px 16px; border-radius: 999px; opacity: 0; transition: opacity 0.18s ease;
+  }
+  .reels-seek-flash.show { opacity: 1; }
+  .reels-seek-flash.left { left: 12%; }
+  .reels-seek-flash.right { right: 12%; }
+  .reels-zoom-badge {
+    position: absolute; top: calc(16px + env(safe-area-inset-top, 0px)); left: calc(16px + env(safe-area-inset-left, 0px));
+    background: rgba(20,18,12,0.75); border: 1px solid rgba(245,241,230,0.4); color: #f5f1e6;
+    font: 700 13px var(--mono); padding: 5px 12px; border-radius: 999px; z-index: 4; cursor: pointer;
+  }
+  .reels-zoom-badge.hidden { display: none; }
   @media (pointer: coarse) {
     .reels-seekbar-thumb { width: 14px; height: 14px; }
     .reels-seek-tick { width: 8px; height: 8px; }
@@ -966,6 +996,9 @@
     <div class="reels-scrub-time" id="reels-scrub-time">0:00</div>
   </div>
   <div class="reels-2x-badge hidden" id="reels-2x-badge">2&times;</div>
+  <div class="reels-zoom-badge hidden" id="reels-zoom-badge" title="Tap to reset zoom">1.0&times;</div>
+  <div class="reels-seek-flash left" id="reels-seek-flash-back">&#8722;10s</div>
+  <div class="reels-seek-flash right" id="reels-seek-flash-fwd">+10s</div>
 </div>
 
 <div id="page-drop-overlay">
@@ -1567,7 +1600,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-09d black-thumbnail-fix";
+var GHOSTDRIVE_BUILD = "2026-09-10b adaptive-crop-no-engagement-ui";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -6784,6 +6817,8 @@ function openReels(mode) {
   ready.then(function (order) {
     $("#btn-reels-shuffle").classList.add("active");
     renderReelsAutoAdvanceUI();
+    renderReelsZoomBadge();
+    reelsShowControls();
     showModal("#reels-modal");
     $("#reels-empty").classList.toggle("hidden", order.length > 0);
     if (!order.length) {
@@ -6879,10 +6914,13 @@ function showReelAt(i) {
   var photo = $("#reels-photo");
   video.pause();
   reelsStopPhotoTimer();
-  video.style.transition = "none";
-  video.style.transform = "translateY(0)";
-  photo.style.transition = "none";
-  photo.style.transform = "translateY(0)";
+  // Adaptive crop is per-item: a new clip gets measured from scratch.
+  // User zoom deliberately is NOT reset -- it stays locked across items.
+  reelsStopCropWatch();
+  reelsResetAutoCrop();
+  reelsCropBlocked = false;
+  reelsSetDragTransform(0, false);
+  reelsShowControls();
   video.playbackRate = 1;
   // Looping and auto-advancing are mutually exclusive: a looping <video>
   // never fires "ended", which is exactly the event auto-advance needs.
@@ -6928,10 +6966,26 @@ function showReelAt(i) {
       reelsStartPhotoTimer(id);
       return;
     }
+    // Must be set BEFORE src or it has no effect. Without it a video
+    // streamed from the Worker taints the canvas and the adaptive crop
+    // can't read a frame back. If a source refuses the CORS-mode request,
+    // the handler below reloads it plainly and does without adaptive
+    // cropping -- degrading the feature rather than failing to play.
+    video.crossOrigin = "anonymous";
+    var onCorsFailure = function () {
+      if (!video.hasAttribute("crossorigin")) return;
+      video.removeAttribute("crossorigin");
+      reelsCropBlocked = true;
+      video.src = url;
+      video.muted = reelsState.muted;
+      video.play().catch(function () {});
+    };
+    video.addEventListener("error", onCorsFailure, { once: true });
     video.src = url;
     video.muted = reelsState.muted;
     video.currentTime = 0;
     video.play().catch(function () {});
+    reelsStartCropWatch();
   }).catch(function (err) {
     if (myToken !== reelsState.loadToken) return;
     loadingEl.classList.add("hidden");
@@ -6955,6 +7009,10 @@ function closeReels() {
   video.removeAttribute("src");
   video.load();
   reelsStopPhotoTimer();
+  reelsStopCropWatch();
+  reelsResetAutoCrop();
+  reelsShowControls(false); // leave the chrome visible for the next open
+  clearTimeout(reelsIdleTimer);
   var reelsPhotoEl = $("#reels-photo");
   reelsPhotoEl.removeAttribute("src");
   reelsPhotoEl.classList.add("hidden");
@@ -6978,6 +7036,14 @@ function closeReels() {
 
 $("#btn-open-reels").addEventListener("click", function () { openReels("all"); });
 $("#btn-open-reels-video").addEventListener("click", function () { openReels("video"); });
+["pointerdown", "pointermove", "wheel", "keydown"].forEach(function (evt) {
+  $("#reels-modal").addEventListener(evt, function () { reelsShowControls(); }, { passive: true });
+});
+// Pausing should always bring the chrome back and leave it there.
+$("#reels-video").addEventListener("play", function () { reelsShowControls(); });
+$("#reels-video").addEventListener("pause", function () { reelsShowControls(false); });
+$("#reels-zoom-badge").addEventListener("click", reelsResetZoom);
+
 $("#btn-reels-close").addEventListener("click", closeReels);
 $("#btn-reels-next").addEventListener("click", reelsNext);
 
@@ -7054,10 +7120,46 @@ $("#btn-reels-delete").addEventListener("click", function () {
 $("#btn-reels-prev").addEventListener("click", reelsPrev);
 
 var reelsSuppressNextClick = false;
-$("#reels-video").addEventListener("click", function () {
+
+/* Double-tap to jump: left half goes back ten seconds, right half forward.
+   The single-tap play/pause has to WAIT OUT the double-tap window rather
+   than firing immediately -- otherwise every double tap would toggle
+   playback on its way to seeking, and you'd land ten seconds along with
+   the video paused. */
+var REELS_DOUBLE_TAP_MS = 280;
+var REELS_SEEK_STEP = 10;
+var reelsLastTapAt = 0;
+var reelsSingleTapTimer = null;
+
+function flashReelSeek(forward) {
+  var el = $(forward ? "#reels-seek-flash-fwd" : "#reels-seek-flash-back");
+  el.classList.add("show");
+  clearTimeout(el._ghostdriveFlashTimer);
+  el._ghostdriveFlashTimer = setTimeout(function () { el.classList.remove("show"); }, 480);
+}
+
+$("#reels-video").addEventListener("click", function (e) {
   if (reelsSuppressNextClick) { reelsSuppressNextClick = false; return; }
   var video = $("#reels-video");
-  if (video.paused) video.play().catch(function () {}); else video.pause();
+  var now = Date.now();
+  var rect = video.getBoundingClientRect();
+  var forward = (e.clientX - rect.left) > rect.width / 2;
+  if (now - reelsLastTapAt < REELS_DOUBLE_TAP_MS) {
+    clearTimeout(reelsSingleTapTimer);
+    reelsSingleTapTimer = null;
+    reelsLastTapAt = 0;
+    if (isFinite(video.duration) && video.duration > 0) {
+      video.currentTime = Math.max(0, Math.min(video.duration - 0.05,
+        video.currentTime + (forward ? REELS_SEEK_STEP : -REELS_SEEK_STEP)));
+      flashReelSeek(forward);
+    }
+    return;
+  }
+  reelsLastTapAt = now;
+  reelsSingleTapTimer = setTimeout(function () {
+    reelsSingleTapTimer = null;
+    if (video.paused) video.play().catch(function () {}); else video.pause();
+  }, REELS_DOUBLE_TAP_MS);
 });
 // Tapping a photo freezes/unfreezes its dwell clock -- the same "tap to
 // pause" the video gets, since for a photo the clock is the playback.
@@ -7108,13 +7210,228 @@ var REELS_HOLD_MS = 220;
 var REELS_HOLD_SPEED = 2;
 var reelsPointer = null; // { id, startX, startY, lastY, moved, lastT, velocity, holding, holdTimer }
 
+/* Pinch-to-zoom.
+   Every gesture writes ONE composed transform -- pan offset, plus the
+   swipe's own offset, then scale -- because they all share the single
+   `transform` property and the last writer would otherwise wipe out the
+   others. Zoom persists across items on purpose ("locked in"): you set a
+   framing and the feed keeps it until you pinch back out or tap the badge.
+   One finger still means exactly what it always meant -- drag to swipe,
+   hold for 2x, tap to pause -- and panning is done with the two-finger
+   gesture's midpoint instead. That is what lets zoom coexist with swiping
+   rather than replacing it, which is the usual tradeoff here. */
+var REELS_MAX_ZOOM = 5;
+var reelsZoom = { scale: 1, x: 0, y: 0 };
+var reelsAutoCrop = { scale: 1, x: 0, y: 0 };
+var reelsActivePointers = new Map();
+var reelsPinch = null;
+
 function reelsSetDragTransform(px, animate) {
   // Applied to both media elements: only one is visible at a time, and
   // driving both keeps a swipe identical whichever kind is on screen.
+  // Four stacked pieces, applied right-to-left by CSS: the adaptive crop
+  // frames the picture first, then the user's pinch zoom and pan act on
+  // that result, and the swipe offset moves the whole thing. Keeping them
+  // as separate functions in one string means none of them has to know the
+  // others' maths.
+  var composed =
+    "translate(" + reelsZoom.x + "px, " + (reelsZoom.y + px) + "px) " +
+    "scale(" + reelsZoom.scale + ") " +
+    "translate(" + reelsAutoCrop.x + "px, " + reelsAutoCrop.y + "px) " +
+    "scale(" + reelsAutoCrop.scale + ")";
   [$("#reels-video"), $("#reels-photo")].forEach(function (el) {
     el.style.transition = animate ? "transform " + REELS_FLY_MS + "ms cubic-bezier(.2,.7,.3,1)" : "none";
-    el.style.transform = "translateY(" + px + "px)";
+    el.style.transform = composed;
   });
+}
+function renderReelsZoomBadge() {
+  var badge = $("#reels-zoom-badge");
+  var zoomed = reelsZoom.scale > 1.01;
+  badge.classList.toggle("hidden", !zoomed);
+  if (zoomed) badge.textContent = reelsZoom.scale.toFixed(1) + "\u00d7";
+}
+function reelsResetZoom() {
+  reelsZoom.scale = 1; reelsZoom.x = 0; reelsZoom.y = 0;
+  reelsSetDragTransform(0, true);
+  renderReelsZoomBadge();
+}
+function reelsPinchPoints() { return Array.prototype.slice.call(reelsActivePointers.values()); }
+function reelsBeginPinch() {
+  // A second finger means pinch, not swipe -- abandon whatever the first
+  // finger had started so the two gestures never fight each other.
+  if (reelsPointer) {
+    clearTimeout(reelsPointer.holdTimer);
+    if (reelsPointer.holding) reelsDisengageHoldSpeed();
+    reelsPointer = null;
+  }
+  var pts = reelsPinchPoints();
+  if (pts.length < 2) return;
+  reelsPinch = {
+    startDist: Math.max(1, Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)),
+    startMidX: (pts[0].x + pts[1].x) / 2,
+    startMidY: (pts[0].y + pts[1].y) / 2,
+    startScale: reelsZoom.scale, startX: reelsZoom.x, startY: reelsZoom.y,
+  };
+  reelsSuppressNextClick = true;
+}
+function reelsUpdatePinch() {
+  var pts = reelsPinchPoints();
+  if (!reelsPinch || pts.length < 2) return;
+  var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  var scale = Math.max(1, Math.min(REELS_MAX_ZOOM, reelsPinch.startScale * (dist / reelsPinch.startDist)));
+  var midX = (pts[0].x + pts[1].x) / 2, midY = (pts[0].y + pts[1].y) / 2;
+  reelsZoom.scale = scale;
+  reelsZoom.x = reelsPinch.startX + (midX - reelsPinch.startMidX);
+  reelsZoom.y = reelsPinch.startY + (midY - reelsPinch.startMidY);
+  if (scale <= 1.01) { reelsZoom.scale = 1; reelsZoom.x = 0; reelsZoom.y = 0; }
+  reelsSetDragTransform(0, false);
+  renderReelsZoomBadge();
+}
+function reelsEndPinch() {
+  reelsPinch = null;
+  if (reelsZoom.scale <= 1.01) reelsResetZoom();
+  renderReelsZoomBadge();
+  reelsSuppressNextClick = true;
+}
+
+/* Adaptive crop.
+   A lot of real footage is a smaller picture inside a bigger frame: a
+   vertical clip exported into a 16:9 file sits in pillarbox bars, and a
+   single video can change orientation partway through, so any fixed crop
+   would be wrong for part of it. This samples the frame a couple of times
+   a second, finds the bounding box of whatever isn't a flat black bar, and
+   scales that box up to fill the screen -- re-measuring as it plays, so a
+   horizontal > vertical > horizontal cut reframes itself at each change
+   instead of staying letterboxed for the whole clip.
+   It only ever zooms IN: the worst case is doing nothing, never showing
+   less than before. */
+var REELS_CROP_SAMPLE_MS = 600;
+var REELS_CROP_DARK = 20;         // 0-255; at or below this a pixel is bar, not picture
+var REELS_CROP_MIN_SIDE = 0.30;   // reject a reading claiming the picture is a sliver
+var REELS_CROP_MIN_CHANGE = 0.03; // ignore sub-3% jitter so the framing doesn't breathe
+var reelsCropTimer = null;
+var reelsCropCanvas = null;
+var reelsCropRect = null;         // currently applied
+var reelsCropPending = null;      // candidate awaiting a second agreeing read
+var reelsCropBlocked = false;     // canvas came back tainted -- skip silently from then on
+
+function reelsDetectContentRect(video) {
+  if (!video.videoWidth || !video.videoHeight) return null;
+  if (!reelsCropCanvas) reelsCropCanvas = document.createElement("canvas");
+  var W = 64;
+  var H = Math.max(8, Math.round(W * video.videoHeight / video.videoWidth));
+  reelsCropCanvas.width = W; reelsCropCanvas.height = H;
+  var ctx = reelsCropCanvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(video, 0, 0, W, H);
+  var data;
+  // A cross-origin frame without CORS taints the canvas and this throws.
+  // That is a reason to do without adaptive cropping, never to break
+  // playback, so it fails quiet and permanent.
+  try { data = ctx.getImageData(0, 0, W, H).data; }
+  catch (e) { reelsCropBlocked = true; return null; }
+  function luma(x, y) {
+    var i = (y * W + x) * 4;
+    return 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+  }
+  function rowIsBar(y) { for (var x = 0; x < W; x++) if (luma(x, y) > REELS_CROP_DARK) return false; return true; }
+  function colIsBar(x) { for (var y = 0; y < H; y++) if (luma(x, y) > REELS_CROP_DARK) return false; return true; }
+  var top = 0; while (top < H && rowIsBar(top)) top++;
+  if (top >= H) return null; // the entire frame is dark: a fade, not a letterbox
+  var bottom = H - 1; while (bottom > top && rowIsBar(bottom)) bottom--;
+  var left = 0; while (left < W && colIsBar(left)) left++;
+  var right = W - 1; while (right > left && colIsBar(right)) right--;
+  var rect = { x: left / W, y: top / H, w: (right - left + 1) / W, h: (bottom - top + 1) / H };
+  if (rect.w < REELS_CROP_MIN_SIDE || rect.h < REELS_CROP_MIN_SIDE) return null;
+  return rect;
+}
+
+function reelsRectsDiffer(a, b) {
+  if (!a || !b) return true;
+  return Math.abs(a.x - b.x) > REELS_CROP_MIN_CHANGE || Math.abs(a.y - b.y) > REELS_CROP_MIN_CHANGE
+      || Math.abs(a.w - b.w) > REELS_CROP_MIN_CHANGE || Math.abs(a.h - b.h) > REELS_CROP_MIN_CHANGE;
+}
+
+function reelsApplyCropRect(rect) {
+  var video = $("#reels-video");
+  var surface = $("#reels-touch-surface");
+  var elW = video.clientWidth, elH = video.clientHeight;
+  var cW = surface.clientWidth, cH = surface.clientHeight;
+  if (!elW || !elH || !cW || !cH || !video.videoWidth || !video.videoHeight) return;
+  // object-fit: contain means the picture does not necessarily fill the
+  // element's own box -- on a wide video capped by max-width there are
+  // bars inside the element too. Measuring against the element box would
+  // then put the offsets in the wrong place, so work out the box the video
+  // actually occupies first.
+  var aspect = video.videoWidth / video.videoHeight;
+  var boxW = elW, boxH = elH;
+  if (elW / elH > aspect) boxW = elH * aspect; else boxH = elW / aspect;
+  elW = boxW; elH = boxH;
+  var contentW = elW * rect.w, contentH = elH * rect.h;
+  if (contentW <= 0 || contentH <= 0) return;
+  var scale = Math.max(1, Math.min(cW / contentW, cH / contentH));
+  // Where the picture's centre sits relative to the frame's centre, undone
+  // at the new scale so that centre ends up in the middle of the screen.
+  var dx = (rect.x + rect.w / 2 - 0.5) * elW;
+  var dy = (rect.y + rect.h / 2 - 0.5) * elH;
+  reelsAutoCrop.scale = scale;
+  reelsAutoCrop.x = -dx * scale;
+  reelsAutoCrop.y = -dy * scale;
+  reelsCropRect = rect;
+  // Ease the reframe so an orientation change glides, but never animate
+  // mid-gesture or it fights the finger.
+  reelsSetDragTransform(0, !reelsPointer && !reelsPinch);
+}
+
+function reelsResetAutoCrop() {
+  reelsAutoCrop.scale = 1; reelsAutoCrop.x = 0; reelsAutoCrop.y = 0;
+  reelsCropRect = null; reelsCropPending = null;
+}
+
+function reelsCropTick() {
+  if (reelsCropBlocked || currentReelIsPhoto()) return;
+  var video = $("#reels-video");
+  if (!video || video.paused || !video.getAttribute("src")) return;
+  var rect = reelsDetectContentRect(video);
+  if (!rect) return;
+  if (!reelsRectsDiffer(rect, reelsCropRect)) { reelsCropPending = null; return; }
+  // Two consecutive agreeing readings before reframing, so one dark frame
+  // in the middle of a shot can't yank the zoom around.
+  if (reelsCropPending && !reelsRectsDiffer(rect, reelsCropPending)) {
+    reelsApplyCropRect(rect);
+    reelsCropPending = null;
+    return;
+  }
+  reelsCropPending = rect;
+}
+
+function reelsStartCropWatch() {
+  reelsStopCropWatch();
+  reelsCropTimer = setInterval(reelsCropTick, REELS_CROP_SAMPLE_MS);
+}
+function reelsStopCropWatch() {
+  if (reelsCropTimer) clearInterval(reelsCropTimer);
+  reelsCropTimer = null;
+}
+
+/* Chrome fades out after a few still seconds so the content has the screen
+   to itself, and comes straight back on any input. It only hides while
+   something is actually playing: paused is precisely when you are reaching
+   for the controls, so hiding them then would be exactly wrong. */
+var REELS_IDLE_HIDE_MS = 2800;
+var reelsIdleTimer = null;
+function reelsIsPaused() {
+  if (currentReelIsPhoto()) return !!reelsPhoto.paused;
+  var video = $("#reels-video");
+  return video.paused || !video.getAttribute("src");
+}
+function reelsShowControls(rearm) {
+  $("#reels-modal").classList.remove("controls-idle");
+  clearTimeout(reelsIdleTimer);
+  if (rearm === false) return;
+  reelsIdleTimer = setTimeout(function () {
+    if (reelsIsPaused()) { reelsShowControls(); return; } // check again once it's playing
+    $("#reels-modal").classList.add("controls-idle");
+  }, REELS_IDLE_HIDE_MS);
 }
 function reelsResetDragTransform() { reelsSetDragTransform(0, true); }
 
@@ -7132,6 +7449,8 @@ function reelsDisengageHoldSpeed() {
 }
 
 $("#reels-touch-surface").addEventListener("pointerdown", function (e) {
+  reelsActivePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (reelsActivePointers.size === 2) { reelsBeginPinch(); return; }
   if (!e.isPrimary || reelsPointer) return;
   var pointer = {
     id: e.pointerId, startX: e.clientX, startY: e.clientY, lastY: e.clientY,
@@ -7147,6 +7466,9 @@ $("#reels-touch-surface").addEventListener("pointerdown", function (e) {
 }, { passive: true });
 
 $("#reels-touch-surface").addEventListener("pointermove", function (e) {
+  var tracked = reelsActivePointers.get(e.pointerId);
+  if (tracked) { tracked.x = e.clientX; tracked.y = e.clientY; }
+  if (reelsPinch) { e.preventDefault(); reelsUpdatePinch(); return; }
   if (!reelsPointer || e.pointerId !== reelsPointer.id || reelsPointer.holding) return;
   var y = e.clientY;
   if (!reelsPointer.moved && Math.hypot(e.clientX - reelsPointer.startX, y - reelsPointer.startY) > REELS_MOVE_CANCEL_PX) {
@@ -7190,10 +7512,14 @@ function reelsEndPointer() {
   setTimeout(function () { if (goingNext) reelsNext(); else reelsPrev(); }, REELS_FLY_MS);
 }
 $("#reels-touch-surface").addEventListener("pointerup", function (e) {
+  reelsActivePointers.delete(e.pointerId);
+  if (reelsPinch) { if (reelsActivePointers.size < 2) reelsEndPinch(); return; }
   if (!reelsPointer || e.pointerId !== reelsPointer.id) return;
   reelsEndPointer();
 });
 $("#reels-touch-surface").addEventListener("pointercancel", function (e) {
+  reelsActivePointers.delete(e.pointerId);
+  if (reelsPinch) { if (reelsActivePointers.size < 2) reelsEndPinch(); return; }
   if (!reelsPointer || e.pointerId !== reelsPointer.id) return;
   var wasHolding = reelsPointer.holding;
   clearTimeout(reelsPointer.holdTimer);
@@ -7689,24 +8015,58 @@ function recordReelCompletion(id) {
   scheduleEngagementSave(id);
 }
 
+/* Upvotes accumulate rather than toggle: tapping again says "more of this"
+   more emphatically, which is a finer signal for the ranking than a single
+   on/off bit. Downvote stays a toggle -- there is no useful meaning to
+   disliking something five times, and it needs to stay reversible. */
+function addReelUpvote(id) {
+  var entry = reelsState.engagement.get(id);
+  if (!entry) return;
+  entry.doc.upvotes = (entry.doc.upvotes || 0) + 1;
+  entry.doc.vote = null; // a stored "down" is cleared by voting the other way
+  entry.dirty = true;
+  scheduleEngagementSave(id);
+  flashReelButton($("#btn-reels-upvote"));
+}
+
 function setReelVote(id, vote) {
   var entry = reelsState.engagement.get(id);
   if (!entry) return;
-  entry.doc.vote = entry.doc.vote === vote ? null : vote; // tapping an active vote clears it, like toggling a like
+  entry.doc.vote = entry.doc.vote === vote ? null : vote; // tapping it again clears it
+  if (vote === "down") entry.doc.upvotes = 0;
   entry.dirty = true;
   scheduleEngagementSave(id);
+  // Same pulse the upvote gets: acknowledge the tap without ever revealing
+  // the resulting state.
+  flashReelButton($("#btn-reels-downvote"));
   renderReelsVoteUI(id);
 }
 
+/* Neither vote button ever shows a persistent state -- that is the point of
+   hiding engagement. They still have to acknowledge the tap though, or
+   there is no way to tell whether it registered, so they pulse instead. */
+function flashReelButton(btn) {
+  if (!btn) return;
+  btn.style.transition = "none";
+  btn.style.transform = "scale(1.35)";
+  requestAnimationFrame(function () {
+    btn.style.transition = "transform 0.25s cubic-bezier(.2,.7,.3,1)";
+    btn.style.transform = "scale(1)";
+  });
+}
+
+/* Nothing about how anything has been rated is ever shown. Both buttons
+   stay in their resting state no matter what has been voted, so the feed
+   is judged on the content in front of you rather than on what a past
+   version of you already decided about it. The votes still count -- they
+   just don't display. */
 function renderReelsVoteUI(id) {
-  var entry = reelsState.engagement.get(id);
-  var vote = entry ? entry.doc.vote : null;
-  $("#btn-reels-upvote").classList.toggle("active", vote === "up");
-  $("#btn-reels-downvote").classList.toggle("active", vote === "down");
+  $("#btn-reels-upvote").classList.remove("active");
+  $("#btn-reels-downvote").classList.remove("active");
 }
 
 $("#btn-reels-upvote").addEventListener("click", function () {
-  setReelVote(reelsState.order[reelsState.index], "up");
+  addReelUpvote(reelsState.order[reelsState.index]);
 });
 $("#btn-reels-downvote").addEventListener("click", function () {
   setReelVote(reelsState.order[reelsState.index], "down");
@@ -7726,7 +8086,13 @@ function engagementScore(doc, durationSec, personBoost) {
   var plays = doc.plays || 0;
   var retention = (plays > 0 && durationSec > 0) ? Math.min(1, (doc.watchSeconds || 0) / (durationSec * plays)) : 0;
   var completionRate = plays > 0 ? Math.min(1, (doc.completions || 0) / plays) : 0;
-  var voteBonus = doc.vote === "up" ? 2 : doc.vote === "down" ? -3 : 0;
+  // Repeated upvotes keep raising this, but with diminishing returns --
+  // ten taps should mean "a lot more of this", not "never show me anything
+  // else". A single legacy "up" from before upvotes were countable is
+  // read as one tap so old votes aren't silently discarded.
+  var upvotes = doc.upvotes || 0;
+  if (!upvotes && doc.vote === "up") upvotes = 1;
+  var voteBonus = doc.vote === "down" ? -3 : 2 * Math.log2(1 + upvotes);
   // With no duration recorded (a thumbnail that failed at upload leaves it
   // null), retention can't be computed -- so it's left out of the blend
   // instead of counting as zero, which would rank the item below something
