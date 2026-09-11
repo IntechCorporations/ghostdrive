@@ -110,7 +110,8 @@
   .toolbar-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   #file-count { color: var(--text-dim); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
   .toolbar-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .sort-control select, .folder-control select, .type-control select, .view-control select { padding: 6px 10px; font-size: 13px; }
+  .sort-control select, .folder-control select, .type-control select, .view-control select,
+  .encryption-control select { padding: 6px 10px; font-size: 13px; }
   .tile-size-control { display: flex; align-items: center; gap: 6px; }
   .tile-size-control .tile-size-icon { font-size: 13px; color: var(--text-dim); }
   .tile-size-control input[type="range"] { width: 100px; accent-color: var(--brass); }
@@ -268,6 +269,18 @@
   .list-view .thumb .kind-badge {
     position: static; background: var(--ink-3); color: var(--text-dim); flex: none;
   }
+  /* Legacy items whose CONTENT is stored encrypted. Everything uploaded
+     since streaming landed stores content in the clear (metadata and
+     thumbnails stay encrypted either way), so these are the stragglers
+     that can't stream and have to be downloaded whole. Marked rather than
+     hidden -- the whole point is to be able to see and select them. */
+  .thumb.encrypted { outline: 2px solid var(--danger); outline-offset: -2px; }
+  .thumb .enc-badge {
+    position: absolute; left: 7px; bottom: 7px; z-index: 2;
+    background: var(--danger); color: #fff; border-radius: 999px;
+    font: 700 9.5px var(--mono); padding: 3px 8px; letter-spacing: 0.05em;
+  }
+  .list-view .thumb .enc-badge { position: static; flex: none; align-self: center; }
   .list-view .thumb .name-label {
     position: static; background: none; color: var(--text); padding: 0; flex: 1;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px;
@@ -778,6 +791,13 @@
           </div>
           <div class="folder-control">
             <select id="folder-select" aria-label="Folder"></select>
+          </div>
+          <div class="encryption-control">
+            <select id="encryption-select" aria-label="Storage">
+              <option value="">All storage</option>
+              <option value="encrypted">Encrypted only</option>
+              <option value="plain">Unencrypted only</option>
+            </select>
           </div>
           <div class="person-control">
             <select id="person-select" aria-label="Person"></select>
@@ -1602,7 +1622,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-11a feed-zoom-everywhere";
+var GHOSTDRIVE_BUILD = "2026-09-11b highlight-encrypted";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -4341,6 +4361,13 @@ $("#sort-select").addEventListener("change", function (e) { currentSort = e.targ
 var currentType = "";
 $("#type-select").addEventListener("change", function (e) { currentType = e.target.value; refreshGallery(); });
 
+/* Filters by how an item's content is STORED, which is a different axis
+   from what kind of file it is -- and the one that matters when the goal
+   is finding the legacy encrypted-content items to clear out. */
+var currentEncryption = "";
+$("#encryption-select").addEventListener("change", function (e) { currentEncryption = e.target.value; refreshGallery(); });
+function itemIsEncrypted(metaJson) { return metaJson.contentEncrypted !== false; }
+
 /* ---------------- View mode (grid / list) ---------------- */
 var VIEW_MODE_KEY = "ghostdrive-view-mode";
 function loadViewMode() {
@@ -4501,6 +4528,10 @@ function refreshGallery() {
 
     var items = currentFolder ? allItems.filter(function (it) { return (it.metaJson.folder || "") === currentFolder; }) : allItems;
     if (currentType) items = items.filter(function (it) { return it.record.kind === currentType; });
+    if (currentEncryption) {
+      var wantEncrypted = currentEncryption === "encrypted";
+      items = items.filter(function (it) { return itemIsEncrypted(it.metaJson) === wantEncrypted; });
+    }
     if (currentPerson) {
       items = items.filter(function (it) {
         return (it.metaJson.people || []).indexOf(currentPerson) !== -1;
@@ -4518,9 +4549,15 @@ function refreshGallery() {
     var totalCount = allItems.length;
     var visibleCount = items.length;
     var noun = function (n) { return n === 1 ? "item" : "items"; };
-    $("#file-count").textContent = (currentFolder || currentType || currentPerson)
+    // Always surface how many legacy encrypted items are left, filtered or
+    // not -- it is the number you're working down, so it shouldn't vanish
+    // the moment you narrow the view.
+    var encryptedCount = allItems.reduce(function (n, it) { return n + (itemIsEncrypted(it.metaJson) ? 1 : 0); }, 0);
+    var countText = (currentFolder || currentType || currentPerson || currentEncryption)
       ? visibleCount + " of " + totalCount + " " + noun(totalCount)
       : totalCount + " " + noun(totalCount);
+    if (encryptedCount) countText += " · " + encryptedCount + " encrypted";
+    $("#file-count").textContent = countText;
 
     // Drop any selected ids that no longer exist at all (e.g. deleted from
     // another tab/device) -- but keep ids merely hidden by the current
@@ -4944,6 +4981,15 @@ function renderTile(record, metaJson) {
   badge.className = "kind-badge";
   badge.textContent = record.kind;
   tile.appendChild(badge);
+
+  if (itemIsEncrypted(metaJson)) {
+    tile.classList.add("encrypted");
+    var encBadge = document.createElement("div");
+    encBadge.className = "enc-badge";
+    encBadge.textContent = "ENCRYPTED";
+    encBadge.title = "Content stored encrypted \u2014 can't stream, has to be downloaded whole";
+    tile.appendChild(encBadge);
+  }
 
   var label = document.createElement("div");
   label.className = "name-label";
