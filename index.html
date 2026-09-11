@@ -246,9 +246,17 @@
     position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(transparent, rgba(0,0,0,0.78));
     color: #f5f1e6; font-size: 12px; padding: 18px 9px 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .thumb.placeholder { display: flex; align-items: center; justify-content: center; color: var(--text-dim); }
-  .thumb.placeholder svg { width: 32px; height: 32px; }
-  .thumb.placeholder.ext-label { font-size: 13px; font-family: var(--mono); letter-spacing: 0.03em; }
+  /* An item with no thumbnail gets a stand-in graphic. That graphic lives
+     in its OWN box rather than being styled onto the tile, because in list
+     view the tile IS the whole row: sizing it like a thumbnail collapsed
+     the entire row to a 52px square and crushed the name and date against
+     the left edge. The box is the thumbnail; the tile stays the row. */
+  .thumb .placeholder-box {
+    width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); background: var(--ink-3);
+  }
+  .thumb .placeholder-box svg { width: 32px; height: 32px; }
+  .thumb .placeholder-box.ext-label { font-size: 13px; font-family: var(--mono); letter-spacing: 0.03em; }
   .thumb.uploading { opacity: 0.55; }
   .thumb .info-row { display: none; }
   .thumb .select-check {
@@ -271,8 +279,9 @@
     border-radius: 8px; padding: 8px 12px;
   }
   .list-view .thumb img, .list-view .thumb video { width: 52px; height: 52px; flex: none; border-radius: 6px; object-fit: cover; }
-  .list-view .thumb.placeholder { width: 52px; height: 52px; flex: none; border-radius: 6px; }
-  .list-view .thumb.placeholder svg { width: 22px; height: 22px; }
+  .list-view .thumb .placeholder-box { width: 52px; height: 52px; flex: none; border-radius: 6px; }
+  .list-view .thumb .placeholder-box svg { width: 22px; height: 22px; }
+  .list-view .thumb .placeholder-box.ext-label { font-size: 11px; }
   .list-view .thumb .kind-badge {
     position: static; background: var(--ink-3); color: var(--text-dim); flex: none;
   }
@@ -295,7 +304,7 @@
   .list-view .thumb .info-row {
     display: flex; gap: 14px; color: var(--text-dim); font-size: 12px; font-family: var(--mono); flex: none;
   }
-  .list-compact .thumb img, .list-compact .thumb video, .list-compact .thumb.placeholder { display: none !important; }
+  .list-compact .thumb img, .list-compact .thumb video, .list-compact .thumb .placeholder-box { display: none !important; }
 
   .empty-state {
     text-align: center; color: var(--text-dim); padding: 90px 20px; font-size: 15px;
@@ -795,11 +804,7 @@
             <input type="search" id="search-input" placeholder="Search names…" aria-label="Search by name" autocomplete="off" spellcheck="false">
           </div>
           <div class="type-control">
-            <select id="type-select" aria-label="Type">
-              <option value="">All types</option>
-              <option value="photo">Photos</option>
-              <option value="video">Videos</option>
-            </select>
+            <select id="type-select" aria-label="Type"></select>
           </div>
           <div class="folder-control">
             <select id="folder-select" aria-label="Folder"></select>
@@ -820,6 +825,8 @@
               <option value="date_asc">Oldest first</option>
               <option value="name_asc">Name (A–Z)</option>
               <option value="name_desc">Name (Z–A)</option>
+              <option value="type_asc">File type (A–Z)</option>
+              <option value="type_desc">File type (Z–A)</option>
               <option value="size_desc">Largest first</option>
               <option value="size_asc">Smallest first</option>
               <option value="duration_desc">Longest first</option>
@@ -1634,7 +1641,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-11g no-duplicate-blocking";
+var GHOSTDRIVE_BUILD = "2026-09-11i organize-by-file-type";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -4333,6 +4340,9 @@ $("#sort-select").addEventListener("change", function (e) { currentSort = e.targ
 
 var currentType = "";
 $("#type-select").addEventListener("change", function (e) { currentType = e.target.value; refreshGallery(); });
+// Seed the base options immediately -- the extension list is filled in on
+// the first render, but an empty dropdown until then looks broken.
+renderTypeOptions([]);
 
 /* Filters by how an item's content is STORED, which is a different axis
    from what kind of file it is -- and the one that matters when the goal
@@ -4355,6 +4365,46 @@ $("#search-input").addEventListener("input", function (e) {
   }, 180);
 });
 function itemIsEncrypted(metaJson) { return metaJson.contentEncrypted !== false; }
+
+/* Sort key for "organize by file type". Anything with no recorded
+   extension sorts to the end rather than to the front, where a run of
+   blanks would otherwise be the first thing you see. */
+var UNKNOWN_TYPE_KEY = "\uffff";
+function itemTypeKey(metaJson) {
+  return ((metaJson.ext || "") + "").toLowerCase() || UNKNOWN_TYPE_KEY;
+}
+
+/* The type filter is built from what the library actually contains, not a
+   fixed list: photos and videos as before, then every extension really
+   present, so "show me just the CR2s" is one click instead of a search. */
+function renderTypeOptions(allExts) {
+  var select = $("#type-select");
+  var previous = currentType;
+  select.innerHTML = "";
+  [["", "All types"], ["photo", "Photos"], ["video", "Videos"]].forEach(function (pair) {
+    var opt = document.createElement("option");
+    opt.value = pair[0]; opt.textContent = pair[1];
+    select.appendChild(opt);
+  });
+  var exts = (allExts || []).slice().sort(function (a, b) { return a.localeCompare(b); });
+  if (exts.length) {
+    var group = document.createElement("optgroup");
+    group.label = "File type";
+    exts.forEach(function (ext) {
+      var opt = document.createElement("option");
+      opt.value = "ext:" + ext;
+      opt.textContent = "." + ext.toUpperCase();
+      group.appendChild(opt);
+    });
+    select.appendChild(group);
+  }
+  // A filter that survives a refresh only if what it points at still
+  // exists -- the last of a type being deleted shouldn't leave the view
+  // stuck on an option that no longer means anything.
+  var stillValid = Array.prototype.some.call(select.options, function (o) { return o.value === previous; });
+  select.value = stillValid ? previous : "";
+  if (!stillValid) currentType = "";
+}
 
 /* ---------------- View mode (grid / list) ---------------- */
 var VIEW_MODE_KEY = "ghostdrive-view-mode";
@@ -4515,7 +4565,17 @@ function refreshGallery() {
     renderFolderOptions(allFolders);
 
     var items = currentFolder ? allItems.filter(function (it) { return (it.metaJson.folder || "") === currentFolder; }) : allItems;
-    if (currentType) items = items.filter(function (it) { return it.record.kind === currentType; });
+    var allExts = Array.from(new Set(allItems
+      .map(function (it) { return ((it.metaJson.ext || "") + "").toLowerCase(); })
+      .filter(Boolean)));
+    renderTypeOptions(allExts);
+    if (currentType) {
+      items = items.filter(function (it) {
+        return currentType.indexOf("ext:") === 0
+          ? ((it.metaJson.ext || "") + "").toLowerCase() === currentType.slice(4)
+          : it.record.kind === currentType;
+      });
+    }
     if (currentEncryption) {
       var wantEncrypted = currentEncryption === "encrypted";
       items = items.filter(function (it) { return itemIsEncrypted(it.metaJson) === wantEncrypted; });
@@ -4576,6 +4636,20 @@ function refreshGallery() {
         case "date_asc": return cmpNullableLast(ma.date, mb.date, true);
         case "name_asc": return cmpNullableLast(ma.name, mb.name, true);
         case "name_desc": return cmpNullableLast(ma.name, mb.name, false);
+        // Within a single type, fall back to alphabetical -- otherwise the
+        // order inside each run of CR2s or HEICs is whatever the database
+        // happened to hand back, which looks random.
+        case "type_asc":
+        case "type_desc": {
+          var ta = itemTypeKey(ma), tb = itemTypeKey(mb);
+          if (ta === tb) return cmpNullableLast(ma.name, mb.name, true);
+          // Items with no recorded extension stay at the end in BOTH
+          // directions -- flipping the order of the real types shouldn't
+          // promote a block of blanks to the top of the list.
+          if (ta === UNKNOWN_TYPE_KEY) return 1;
+          if (tb === UNKNOWN_TYPE_KEY) return -1;
+          return currentSort === "type_asc" ? ta.localeCompare(tb) : tb.localeCompare(ta);
+        }
         case "size_desc": return cmpNullableLast(ma.size, mb.size, false);
         case "size_asc": return cmpNullableLast(ma.size, mb.size, true);
         case "duration_desc": return cmpNullableLast(ma.duration, mb.duration, false);
@@ -4972,15 +5046,21 @@ function renderTile(record, metaJson) {
     tile.appendChild(img);
     if (record.kind === "video") wireVideoHoverPreview(tile, img, record, metaJson);
   } else {
+    // Note this writes into a child, not the tile. Setting textContent on
+    // the tile would also wipe every sibling appended after it, and sizing
+    // the tile as a thumbnail breaks the list row -- see .placeholder-box.
     tile.classList.add("placeholder");
+    var ph = document.createElement("div");
+    ph.className = "placeholder-box";
     if (record.kind === "video") {
-      tile.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 9l5-3v12l-5-3"/></svg>';
+      ph.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="15" height="14" rx="2"/><path d="M17 9l5-3v12l-5-3"/></svg>';
     } else if (metaJson.ext) {
-      tile.classList.add("ext-label");
-      tile.textContent = metaJson.ext.toUpperCase();
+      ph.classList.add("ext-label");
+      ph.textContent = metaJson.ext.toUpperCase();
     } else {
-      tile.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
+      ph.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
     }
+    tile.appendChild(ph);
   }
 
   var check = document.createElement("div");
