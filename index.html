@@ -1634,7 +1634,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-11e dedupe-by-storage-mode";
+var GHOSTDRIVE_BUILD = "2026-09-11g no-duplicate-blocking";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -2494,89 +2494,23 @@ function detectLivePhotoPairs(files) {
   });
 }
 
-/* ---------------- Duplicate detection ----------------
-   Skips a file at upload time if something with the same name and byte
-   size already exists in the library, or if the same combination shows up
-   more than once within the same batch (a folder that itself contains a
-   couple of copies, dropping the same selection twice, etc). Name+size is
-   a deliberately cheap check rather than hashing full file contents --
-   good enough to catch the actual "I dropped this folder in again"/"this
-   was already imported from my phone" cases this is for, without reading
-   every byte of every video just to compute a checksum before it's even
-   decided whether to upload. Every existing object's real name/size lives
-   inside its own encrypted metadata, so building the index means
-   decrypting each record once -- the same thing refreshGallery() already
-   does on every render, just done here as a one-off pass right before a
-   batch starts. */
-function dupeKey(name, size) {
-  return (name || "").trim().toLowerCase() + "|" + (size || 0);
-}
-/* What the library already holds for each name+size, counted separately by
-   how the content is stored. A new upload always stores content
-   unencrypted (see prepareUpload), so an existing copy that is ENCRYPTED
-   is not really the same thing -- re-uploading is precisely how a legacy
-   encrypted item gets replaced with a streamable one. Treating that as a
-   duplicate made those items impossible to upgrade without deleting the
-   original first and hoping the upload then went through. So only an
-   existing unencrypted copy counts as a duplicate worth skipping. */
-function buildExistingFileIndex() {
-  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
-    if (res.error) { console.error(res.error); return new Map(); }
-    var index = new Map();
-    (res.data || []).forEach(function (record) {
-      try {
-        var loaded = loadObjectMeta(record);
-        var key = dupeKey(loaded.metaJson.name, loaded.metaJson.size);
-        var entry = index.get(key) || { plain: 0, encrypted: 0 };
-        if (itemIsEncrypted(loaded.metaJson)) entry.encrypted++; else entry.plain++;
-        index.set(key, entry);
-      } catch (e) {} // one unreadable record shouldn't block dedup for everything else
-    });
-    return index;
-  });
-}
-function dedupeAgainstLibrary(files) {
-  return buildExistingFileIndex().then(function (existing) {
-    var seenInBatch = new Set();
-    var kept = [], skipped = [], replacingEncrypted = [];
-    files.forEach(function (file) {
-      var key = dupeKey(file.name, file.size);
-      if (seenInBatch.has(key)) { skipped.push(file); return; } // the same file twice in one drop
-      var match = existing.get(key);
-      // Only a copy stored the same way this upload will be counts as a
-      // duplicate. A match that exists ONLY as an encrypted item goes
-      // through on purpose, so it can be replaced.
-      if (match && match.plain > 0) { skipped.push(file); return; }
-      if (match && match.encrypted > 0) replacingEncrypted.push(file);
-      seenInBatch.add(key);
-      kept.push(file);
-    });
-    return { kept: kept, skipped: skipped, replacingEncrypted: replacingEncrypted };
-  });
-}
+/* ---------------- Duplicate detection: removed ----------------
+   There used to be a name+size check here that skipped a file at upload
+   time if the library already held a match. It is gone deliberately.
+   Two reasons it was more trouble than it was worth: name+size is a guess,
+   not an identity -- two genuinely different files can collide on it and
+   be silently dropped -- and the check cost a full table read plus a
+   decrypt of every record before a batch could even start, which is the
+   slowest thing that happened on the way to an upload. Everything picked
+   is now uploaded. Duplicates are easier to spot and delete afterwards
+   (sort by name, or search) than to argue with beforehand. */
 
 function processFiles(files) {
   if (!files.length) return;
+  // Straight through: expand any zips, pair up Live Photos, upload the lot.
+  // Nothing is filtered out on the way in any more -- see above.
   expandZips(files).then(function (expanded) {
-    return dedupeAgainstLibrary(detectLivePhotoPairs(expanded));
-  }).then(function (result) {
-    result.skipped.forEach(function (file) {
-      logUploadResult(file.name, file.size, false, "Already in your library, unencrypted (same name and size) — skipped.", true);
-    });
-    // Noted rather than left silent: this is the one case where a file you
-    // already have uploads anyway, so ending up with two rows for it should
-    // be explained as it happens rather than discovered later.
-    (result.replacingEncrypted || []).forEach(function (file) {
-      logUploadResult(file.name, file.size, true,
-        "Existing copy is encrypted — uploading an unencrypted one alongside it.", false);
-    });
-    if (result.skipped.length) {
-      var statusEl = $("#upload-status");
-      var noun = result.skipped.length === 1 ? "duplicate" : "duplicates";
-      statusEl.textContent = "Skipped " + result.skipped.length + " " + noun + " already in your library (see upload log).";
-      setTimeout(function () { if (statusEl.textContent.indexOf("Skipped") === 0) statusEl.textContent = ""; }, 6000);
-    }
-    processExpandedFiles(result.kept);
+    processExpandedFiles(detectLivePhotoPairs(expanded));
   });
 }
 
