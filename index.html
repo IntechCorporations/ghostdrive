@@ -1634,7 +1634,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-11c search-and-encrypted-folder";
+var GHOSTDRIVE_BUILD = "2026-09-11d flat-sort-order";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -4623,17 +4623,31 @@ function refreshGallery() {
       }
     });
 
+    /* Day grouping only makes sense for a date sort.
+       Applied to a name, size or duration sort it silently re-orders
+       everything: items get bucketed by day FIRST, and the chosen order
+       then only holds within each bucket -- so an A-to-Z list actually
+       comes out as "Tuesday A-Z, then Wednesday A-Z, then...". With older
+       uploads sitting on different dates than newer ones, that reads as
+       whole categories of file being separated out from the rest, which is
+       not something the sort was ever asked to do. For any non-date sort
+       the list stays flat and the order shown is exactly the order sorted. */
+    var groupByDay = currentSort === "date_desc" || currentSort === "date_asc";
     var groups = [];
-    var groupsByKey = {};
-    items.forEach(function (item) {
-      var key = dayKey(item.metaJson.date) || "__none__";
-      if (!groupsByKey[key]) {
-        var g = { key: key, header: formatGroupHeader(item.metaJson.date), items: [] };
-        groupsByKey[key] = g;
-        groups.push(g);
-      }
-      groupsByKey[key].items.push(item);
-    });
+    if (groupByDay) {
+      var groupsByKey = {};
+      items.forEach(function (item) {
+        var key = dayKey(item.metaJson.date) || "__none__";
+        if (!groupsByKey[key]) {
+          var g = { key: key, header: formatGroupHeader(item.metaJson.date), items: [] };
+          groupsByKey[key] = g;
+          groups.push(g);
+        }
+        groupsByKey[key].items.push(item);
+      });
+    } else {
+      groups = [{ key: "__all__", header: "", items: items, flat: true }];
+    }
 
     state.viewerOrder = items.map(function (item) { return item.record.id; });
 
@@ -4649,8 +4663,13 @@ function refreshGallery() {
     groups.forEach(function (group) {
       group.items.forEach(function (item, idx) {
         var tile = renderTile(item.record, item.metaJson);
-        tile.dataset.header = group.header;
-        if (idx === 0) tile.dataset.isDayFirst = "1"; // scroll-pill boundary marker, see updateScrollDatePill()
+        // The floating scroll pill reads these markers. Under a non-date
+        // sort the dates aren't in any order, so a day pill would be
+        // nonsense -- leaving the markers off makes it hide itself.
+        if (!group.flat) {
+          tile.dataset.header = group.header;
+          if (idx === 0) tile.dataset.isDayFirst = "1"; // scroll-pill boundary, see updateScrollDatePill()
+        }
         grid.appendChild(tile);
       });
     });
