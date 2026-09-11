@@ -112,6 +112,11 @@
   .toolbar-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .sort-control select, .folder-control select, .type-control select, .view-control select,
   .encryption-control select { padding: 6px 10px; font-size: 13px; }
+  .search-control input {
+    padding: 6px 10px; font-size: 13px; min-width: 190px;
+    background: var(--ink); color: var(--text); border: 1px solid var(--line); border-radius: 7px;
+  }
+  .search-control input:focus { border-color: var(--brass); outline: none; }
   .tile-size-control { display: flex; align-items: center; gap: 6px; }
   .tile-size-control .tile-size-icon { font-size: 13px; color: var(--text-dim); }
   .tile-size-control input[type="range"] { width: 100px; accent-color: var(--brass); }
@@ -126,6 +131,8 @@
     .toolbar { padding: 10px 16px; }
     .toolbar-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
     .toolbar-controls > div { width: 100%; }
+    .toolbar-controls > .search-control { grid-column: 1 / -1; }
+    .search-control input { min-width: 0; width: 100%; }
     .toolbar-controls select { width: 100%; }
     .tile-size-control { grid-column: 1 / -1; }
     .tile-size-control input[type="range"] { flex: 1; width: auto; }
@@ -769,7 +776,9 @@
           <button type="button" id="btn-open-reels-video" class="secondary">&#9654; Shuffle: videos only</button>
           <button type="button" id="btn-open-people" class="secondary">People</button>
           <button type="button" id="btn-rebuild-thumbs" class="secondary">Rebuild broken previews</button>
+          <button type="button" id="btn-file-encrypted" class="secondary">File encrypted into a folder</button>
           <span id="rebuild-thumbs-status" class="hint"></span>
+          <span id="file-encrypted-status" class="hint"></span>
           <button id="btn-lock">Sign out</button>
         </div>
       </header>
@@ -782,6 +791,9 @@
           <button type="button" id="btn-open-errors" class="log-trigger">Errors<span id="error-badge" class="log-badge hidden">0</span></button>
         </div>
         <div class="toolbar-controls">
+          <div class="search-control">
+            <input type="search" id="search-input" placeholder="Search names…" aria-label="Search by name" autocomplete="off" spellcheck="false">
+          </div>
           <div class="type-control">
             <select id="type-select" aria-label="Type">
               <option value="">All types</option>
@@ -1622,7 +1634,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-11b highlight-encrypted";
+var GHOSTDRIVE_BUILD = "2026-09-11c search-and-encrypted-folder";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -4366,6 +4378,21 @@ $("#type-select").addEventListener("change", function (e) { currentType = e.targ
    is finding the legacy encrypted-content items to clear out. */
 var currentEncryption = "";
 $("#encryption-select").addEventListener("change", function (e) { currentEncryption = e.target.value; refreshGallery(); });
+
+/* Name search. Debounced because re-rendering several hundred tiles on
+   every keystroke makes typing feel like wading. Matches folder names too,
+   so typing a folder name finds its contents without changing the folder
+   filter. */
+var currentSearch = "";
+var searchDebounceTimer = null;
+$("#search-input").addEventListener("input", function (e) {
+  var value = e.target.value;
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(function () {
+    currentSearch = value.trim().toLowerCase();
+    refreshGallery();
+  }, 180);
+});
 function itemIsEncrypted(metaJson) { return metaJson.contentEncrypted !== false; }
 
 /* ---------------- View mode (grid / list) ---------------- */
@@ -4532,6 +4559,12 @@ function refreshGallery() {
       var wantEncrypted = currentEncryption === "encrypted";
       items = items.filter(function (it) { return itemIsEncrypted(it.metaJson) === wantEncrypted; });
     }
+    if (currentSearch) {
+      items = items.filter(function (it) {
+        return (it.metaJson.name || "").toLowerCase().indexOf(currentSearch) !== -1
+            || (it.metaJson.folder || "").toLowerCase().indexOf(currentSearch) !== -1;
+      });
+    }
     if (currentPerson) {
       items = items.filter(function (it) {
         return (it.metaJson.people || []).indexOf(currentPerson) !== -1;
@@ -4539,9 +4572,11 @@ function refreshGallery() {
     }
     renderPersonOptions();
     $("#empty-state").classList.toggle("hidden", items.length > 0);
-    $("#empty-state").textContent = currentFolder
-      ? 'Nothing in "' + currentFolder + '" yet. Drag files in, or move some over from another folder.'
-      : 'Nothing here yet. Drag files in, or add photos and videos above.';
+    $("#empty-state").textContent = currentSearch
+      ? 'Nothing matches "' + currentSearch + '".'
+      : (currentFolder
+          ? 'Nothing in "' + currentFolder + '" yet. Drag files in, or move some over from another folder.'
+          : 'Nothing here yet. Drag files in, or add photos and videos above.');
 
     // File counter -- total item count, plus how many match the current
     // filter (if any) so it's clear at a glance whether you're looking at
@@ -4553,7 +4588,7 @@ function refreshGallery() {
     // not -- it is the number you're working down, so it shouldn't vanish
     // the moment you narrow the view.
     var encryptedCount = allItems.reduce(function (n, it) { return n + (itemIsEncrypted(it.metaJson) ? 1 : 0); }, 0);
-    var countText = (currentFolder || currentType || currentPerson || currentEncryption)
+    var countText = (currentFolder || currentType || currentPerson || currentEncryption || currentSearch)
       ? visibleCount + " of " + totalCount + " " + noun(totalCount)
       : totalCount + " " + noun(totalCount);
     if (encryptedCount) countText += " · " + encryptedCount + " encrypted";
@@ -6626,6 +6661,66 @@ function rebuildMissingThumbnails() {
   });
 }
 $("#btn-rebuild-thumbs").addEventListener("click", rebuildMissingThumbnails);
+
+/* Gathers every legacy encrypted-content item into one folder so they can
+   be reviewed and cleared out as a group instead of hunted for one at a
+   time. A folder here is just a name stored in an item's own metadata, so
+   this rewrites that one field and touches nothing else -- no bytes move,
+   nothing is deleted, and putting them back is only ever another move. */
+var ENCRYPTED_FOLDER_NAME = "Encrypted (legacy)";
+
+function fileEncryptedIntoFolder() {
+  var btn = $("#btn-file-encrypted");
+  var status = $("#file-encrypted-status");
+  btn.disabled = true;
+  status.textContent = "Looking for encrypted items…";
+  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
+    if (res.error) throw res.error;
+    var todo = [];
+    var unreadable = 0;
+    (res.data || []).forEach(function (record) {
+      var loaded;
+      // Something whose metadata won't decrypt can't be classified either
+      // way, so it is counted and left alone rather than guessed at.
+      try { loaded = loadObjectMeta(record); } catch (e) { unreadable++; return; }
+      if (!itemIsEncrypted(loaded.metaJson)) return;
+      if ((loaded.metaJson.folder || "") === ENCRYPTED_FOLDER_NAME) return; // already filed
+      todo.push({ record: record, loaded: loaded });
+    });
+    if (!todo.length) {
+      status.textContent = "Nothing to file" + (unreadable ? " (" + unreadable + " unreadable)" : "") + ".";
+      btn.disabled = false;
+      return;
+    }
+    var alreadyFiled = todo.filter(function (t) { return (t.loaded.metaJson.folder || "") !== ""; }).length;
+    var warning = "Move " + todo.length + " encrypted item" + (todo.length === 1 ? "" : "s")
+      + ' into the folder "' + ENCRYPTED_FOLDER_NAME + '"?\n\n'
+      + "Nothing is deleted — this only changes which folder they're filed under."
+      + (alreadyFiled ? "\n\n" + alreadyFiled + " of them are currently in another folder and will be moved out of it." : "");
+    if (!confirm(warning)) { status.textContent = ""; btn.disabled = false; return; }
+
+    var at = 0, moved = 0, failed = 0;
+    function step() {
+      if (at >= todo.length) {
+        status.textContent = 'Filed ' + moved + ' into "' + ENCRYPTED_FOLDER_NAME + '"'
+          + (failed ? ", " + failed + " failed" : "") + ".";
+        btn.disabled = false;
+        refreshGallery();
+        return;
+      }
+      var item = todo[at];
+      status.textContent = "Filing… " + (at + 1) + " of " + todo.length;
+      patchObjectMetadata(item.record, item.loaded.fileKey, item.loaded.metaJson, { folder: ENCRYPTED_FOLDER_NAME })
+        .then(function () { moved++; at++; step(); })
+        .catch(function () { failed++; at++; step(); });
+    }
+    step();
+  }).catch(function (err) {
+    status.textContent = "Couldn't file them: " + friendlyError(err);
+    btn.disabled = false;
+  });
+}
+$("#btn-file-encrypted").addEventListener("click", fileEncryptedIntoFolder);
 
 $("#btn-open-people").addEventListener("click", function () {
   renderPeopleList();
