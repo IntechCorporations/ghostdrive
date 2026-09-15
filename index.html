@@ -319,6 +319,16 @@
   }
   .list-compact .thumb img, .list-compact .thumb video, .list-compact .thumb .placeholder-box { display: none !important; }
 
+  .idle-warning {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    margin: 0 28px 10px; padding: 10px 14px; border-radius: 8px;
+    background: var(--danger-tint); border: 1px solid var(--danger);
+    color: var(--text); font-size: 13px;
+  }
+  .idle-warning.hidden { display: none; }
+  .idle-warning button { padding: 6px 12px; font-size: 12.5px; }
+  @media (max-width: 640px) { .idle-warning { margin: 0 16px 10px; } }
+
   .folder-rail { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 28px 10px; align-items: center; }
   .folder-rail:empty { display: none; }
   .folder-chip {
@@ -899,6 +909,11 @@
         <span id="selection-status" class="hint"></span>
         <button type="button" id="btn-selection-deselect" class="secondary">Deselect (Esc)</button>
         <button type="button" id="btn-selection-delete" class="danger">Delete</button>
+      </div>
+
+      <div id="idle-warning" class="idle-warning hidden">
+        <span>Signing you out shortly — no activity for a while.</span>
+        <button type="button" id="btn-idle-stay">Stay signed in</button>
       </div>
 
       <div id="folder-rail" class="folder-rail"></div>
@@ -1690,7 +1705,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-15e allow-m4v";
+var GHOSTDRIVE_BUILD = "2026-09-15h paging-and-gif-fallback";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -1735,6 +1750,9 @@ function isGoogleUser(user) {
 function enterVault() {
   saveDeviceKey();
   showScreen("#screen-vault");
+  // Armed here as well as on activity: signing in and immediately walking
+  // away is exactly the case this exists for, and that produces no events.
+  armIdleSignOut();
   refreshGallery();
   // Picks back up any upload left over from a tab that got closed (or a
   // browser that crashed) mid-transfer -- see the "Durable upload queue"
@@ -2067,6 +2085,60 @@ function maybeFinishPendingSignOut() {
     performSignOut();
   }
 }
+/* ---------------- Auto sign-out ----------------
+   Two hours of INACTIVITY rather than two hours of session. The thing being
+   guarded against is an unlocked vault left open on a screen you walked
+   away from; a hard session cap wouldn't help with that and would sign you
+   out mid-use at the two hour mark regardless of what you were doing.
+   Anything still transferring defers it, through the same "finish uploads
+   first" path the Sign out button already takes -- pulling the session out
+   from under an in-flight transfer is precisely the failure that path was
+   built to avoid. */
+var AUTO_SIGNOUT_MS = 2 * 60 * 60 * 1000;
+var AUTO_SIGNOUT_WARN_MS = 60 * 1000;
+var idleSignOutTimer = null;
+var idleWarnTimer = null;
+var idleLastReset = 0;
+
+function armIdleSignOut() {
+  clearTimeout(idleSignOutTimer);
+  clearTimeout(idleWarnTimer);
+  $("#idle-warning").classList.add("hidden");
+  if (!isVaultOpen()) return;
+  idleWarnTimer = setTimeout(function () {
+    if (isVaultOpen()) $("#idle-warning").classList.remove("hidden");
+  }, Math.max(0, AUTO_SIGNOUT_MS - AUTO_SIGNOUT_WARN_MS));
+  idleSignOutTimer = setTimeout(function () {
+    if (!isVaultOpen()) return;
+    $("#idle-warning").classList.add("hidden");
+    if (uploadsInFlight > 0) {
+      // Still transferring: hand it to the existing deferral and let the
+      // last upload land before the session goes.
+      if (!pendingSignOut) {
+        pendingSignOut = true;
+        $("#btn-lock").disabled = true;
+        $("#btn-lock").textContent = "Finishing uploads…";
+      }
+      return;
+    }
+    performSignOut();
+  }, AUTO_SIGNOUT_MS);
+}
+
+function noteActivity() {
+  var now = Date.now();
+  if (now - idleLastReset < 1000) return; // mousemove fires constantly; throttle the re-arm
+  idleLastReset = now;
+  armIdleSignOut();
+}
+["pointerdown", "keydown", "wheel", "touchstart", "mousemove"].forEach(function (evt) {
+  window.addEventListener(evt, noteActivity, { passive: true });
+});
+document.addEventListener("visibilitychange", function () {
+  if (!document.hidden) noteActivity();
+});
+$("#btn-idle-stay").addEventListener("click", noteActivity);
+
 $("#btn-lock").addEventListener("click", function () {
   if (uploadsInFlight > 0 && !pendingSignOut) {
     pendingSignOut = true;
@@ -4430,6 +4502,31 @@ $("#search-input").addEventListener("input", function (e) {
     refreshGallery();
   }, 180);
 });
+/* ---------------- Reading the whole library ----------------
+   PostgREST answers a plain select with at most 1000 rows, silently: no
+   error, no flag, just a short array. Past a thousand items the newest
+   uploads simply stop appearing -- which is indistinguishable, from the
+   outside, from an upload that didn't work, and sends you looking at the
+   uploader instead of at the query. Every full-library read pages through
+   explicitly instead of trusting one response to be complete. */
+var OBJECT_PAGE_SIZE = 1000;
+var OBJECT_FETCH_MAX = 50000; // a stop so a runaway can't page forever
+function fetchAllObjects(refine) {
+  var rows = [];
+  function page(from) {
+    var q = sb.from("objects").select("*").eq("user_id", state.userId);
+    if (refine) q = refine(q);
+    return q.range(from, from + OBJECT_PAGE_SIZE - 1).then(function (res) {
+      if (res.error) throw res.error;
+      var batch = res.data || [];
+      rows = rows.concat(batch);
+      if (batch.length < OBJECT_PAGE_SIZE || rows.length >= OBJECT_FETCH_MAX) return rows;
+      return page(from + OBJECT_PAGE_SIZE);
+    });
+  }
+  return page(0);
+}
+
 function itemIsEncrypted(metaJson) { return metaJson.contentEncrypted !== false; }
 
 /* ---------------- Folders ----------------
@@ -4819,8 +4916,8 @@ function findDuplicates() {
   }
   btn.disabled = true;
   status.textContent = "Scanning…";
-  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
-    if (res.error) throw res.error;
+  return fetchAllObjects().then(function (allRows) {
+    var res = { data: allRows };
     var byKey = new Map();
     var unreadable = 0;
     (res.data || []).forEach(function (record) {
@@ -4871,8 +4968,8 @@ $("#btn-find-duplicates").addEventListener("click", findDuplicates);
    explicit step -- nothing is selected or removed by the scan itself. */
 function selectDuplicateExtras() {
   if (!duplicateIds) return;
-  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
-    if (res.error) throw res.error;
+  return fetchAllObjects().then(function (allRows) {
+    var res = { data: allRows };
     var byKey = new Map();
     (res.data || []).forEach(function (record) {
       if (!duplicateIds.has(record.id)) return;
@@ -5085,15 +5182,30 @@ function refreshGallery() {
   // on its next open, which is the right call rather than yanking the feed
   // out from under someone mid-watch.
   if (!isReelsOpen()) reelsPrewarmPromise = null;
-  sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
-    if (res.error) { console.error(res.error); return; }
-    var records = res.data || [];
+  fetchAllObjects().then(function (allRows) {
+    var records = allRows;
     galleryRoot.innerHTML = "";
 
-    var allItems = records.map(function (record) {
-      var loaded = loadObjectMeta(record);
-      return { record: record, fileKey: loaded.fileKey, metaJson: loaded.metaJson };
+    /* One unreadable row must not take the whole gallery down with it.
+       This was a plain .map(), so a single record whose metadata failed to
+       decrypt threw straight out of the .then(): the render aborted
+       part-way, the gallery kept whatever was on screen from before, and a
+       file that had genuinely finished uploading simply never appeared.
+       The upload log was telling the truth and the gallery was the broken
+       half -- exactly the wrong way round for working out what happened.
+       Bad rows are now counted and surfaced instead of thrown. */
+    var undecryptable = 0;
+    var allItems = [];
+    records.forEach(function (record) {
+      var loaded;
+      try { loaded = loadObjectMeta(record); }
+      catch (e) { undecryptable++; return; }
+      allItems.push({ record: record, fileKey: loaded.fileKey, metaJson: loaded.metaJson });
     });
+    if (undecryptable) {
+      logError("GALLERY", undecryptable + " item(s) couldn't be decrypted and aren't shown",
+        "Their rows exist but the metadata won't open with this vault key.");
+    }
 
     var allFolders = Array.from(new Set(allItems.reduce(function (acc, it) {
       return acc.concat(itemFolders(it.metaJson));
@@ -5156,6 +5268,7 @@ function refreshGallery() {
       ? visibleCount + " of " + totalCount + " " + noun(totalCount)
       : totalCount + " " + noun(totalCount);
     if (encryptedCount) countText += " · " + encryptedCount + " encrypted";
+    if (undecryptable) countText += " · " + undecryptable + " unreadable";
     $("#file-count").textContent = countText;
 
     // Drop any selected ids that no longer exist at all (e.g. deleted from
@@ -6513,6 +6626,96 @@ function loadGifEncoder() {
   return gifencPromise;
 }
 
+/* How many frames are in these bytes, read straight from the GIF block
+   structure. Needed because "is this animated?" has to be answerable
+   WITHOUT a decoder: a single-frame .gif should take the ordinary canvas
+   path, and routing every .gif through the animated path meant a static one
+   failed outright on any browser lacking ImageDecoder. */
+function countGifFrames(bytes) {
+  if (bytes.length < 13 || bytes[0] !== 0x47 || bytes[1] !== 0x49 || bytes[2] !== 0x46) return 0;
+  var p = 13;
+  var flags = bytes[10];
+  if (flags & 0x80) p += 3 * (1 << ((flags & 7) + 1)); // global colour table
+  var frames = 0;
+  while (p < bytes.length) {
+    var b = bytes[p];
+    if (b === 0x3B) break;               // trailer
+    if (b === 0x21) {                    // extension block
+      p += 2;
+      while (p < bytes.length && bytes[p] !== 0) p += bytes[p] + 1;
+      p++;
+    } else if (b === 0x2C) {             // image descriptor = one frame
+      frames++;
+      var lf = bytes[p + 9];
+      p += 10;
+      if (lf & 0x80) p += 3 * (1 << ((lf & 7) + 1));    // local colour table
+      p++;                               // LZW minimum code size
+      while (p < bytes.length && bytes[p] !== 0) p += bytes[p] + 1;
+      p++;
+    } else break;                        // unrecognised -- stop rather than loop
+  }
+  return frames;
+}
+
+/* Frame decoding, by whichever route this browser offers.
+   ImageDecoder is the cheap one but Safari and Firefox don't have it, which
+   is what produced "this browser can't decode GIF frames" -- so there's a
+   pure-JS decoder behind it. gifuct hands back per-frame PATCHES rather
+   than whole frames, so they're composited onto a running canvas with GIF
+   disposal honoured; skipping that leaves smeared trails on any GIF that
+   doesn't repaint the full rectangle each frame. Resolves to a list of
+   { bitmap, delayMs }. */
+var GIFUCT_URL = "https://cdn.jsdelivr.net/npm/gifuct-js@2.1.2/+esm";
+var gifuctPromise = null;
+function loadGifDecoder() {
+  if (!gifuctPromise) {
+    gifuctPromise = import(GIFUCT_URL).catch(function (err) { gifuctPromise = null; throw err; });
+  }
+  return gifuctPromise;
+}
+
+function decodeGifFrames(bytes) {
+  if (typeof ImageDecoder !== "undefined") {
+    var decoder = new ImageDecoder({ data: bytes, type: "image/gif" });
+    return decoder.tracks.ready.then(function () {
+      var count = decoder.tracks.selectedTrack ? decoder.tracks.selectedTrack.frameCount : 0;
+      var frames = [];
+      function next(i) {
+        if (i >= count) return frames;
+        return decoder.decode({ frameIndex: i }).then(function (r) {
+          frames.push({ bitmap: r.image, delayMs: Math.max(20, Math.round((r.image.duration || 100000) / 1000)) });
+          return next(i + 1);
+        });
+      }
+      return next(0);
+    });
+  }
+  return loadGifDecoder().then(function (gifuct) {
+    var gif = gifuct.parseGIF(bytes.buffer ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) : bytes);
+    var parsed = gifuct.decompressFrames(gif, true);
+    if (!parsed.length) return [];
+    var fullW = gif.lsd.width, fullH = gif.lsd.height;
+    var stage = document.createElement("canvas");
+    stage.width = fullW; stage.height = fullH;
+    var sctx = stage.getContext("2d");
+    var patch = document.createElement("canvas");
+    var pctx = patch.getContext("2d");
+    var frames = [];
+    parsed.forEach(function (f) {
+      patch.width = f.dims.width; patch.height = f.dims.height;
+      pctx.putImageData(new ImageData(new Uint8ClampedArray(f.patch), f.dims.width, f.dims.height), 0, 0);
+      // disposalType 2 = restore this frame's rectangle to background first.
+      if (f.disposalType === 2) sctx.clearRect(f.dims.left, f.dims.top, f.dims.width, f.dims.height);
+      sctx.drawImage(patch, f.dims.left, f.dims.top);
+      var snap = document.createElement("canvas");
+      snap.width = fullW; snap.height = fullH;
+      snap.getContext("2d").drawImage(stage, 0, 0);
+      frames.push({ bitmap: snap, delayMs: Math.max(20, f.delay || 100) });
+    });
+    return frames;
+  });
+}
+
 function isAnimatedGifItem(metaJson) {
   var mime = ((metaJson && metaJson.mime) || "").toLowerCase();
   var ext = ((metaJson && metaJson.ext) || "").toLowerCase();
@@ -6524,45 +6727,29 @@ function isAnimatedGifItem(metaJson) {
    Blob, or null when this isn't actually a multi-frame GIF (one frame is
    just a still, and the ordinary canvas path handles those better). */
 function transformAnimatedGif(sourceBytes, outW, outH, drawFrame) {
-  if (typeof ImageDecoder === "undefined") {
-    return Promise.reject(new Error("this browser can't decode GIF frames"));
-  }
-  return loadGifEncoder().then(function (gifenc) {
-    var decoder = new ImageDecoder({ data: sourceBytes, type: "image/gif" });
-    return decoder.tracks.ready.then(function () {
-      var track = decoder.tracks.selectedTrack;
-      var frameCount = track ? track.frameCount : 0;
-      if (!frameCount || frameCount < 2) return null; // a still -- not our job
-      var encoder = gifenc.GIFEncoder();
-      var canvas = document.createElement("canvas");
-      canvas.width = outW; canvas.height = outH;
-      var ctx = canvas.getContext("2d", { willReadFrequently: true });
-      var index = 0;
-      function nextFrame() {
-        if (index >= frameCount) {
-          encoder.finish();
-          return new Blob([encoder.bytes()], { type: "image/gif" });
-        }
-        return decoder.decode({ frameIndex: index++ }).then(function (result) {
-          var frame = result.image;
-          ctx.clearRect(0, 0, outW, outH);
-          ctx.save();
-          drawFrame(ctx, frame);
-          ctx.restore();
-          var pixels = ctx.getImageData(0, 0, outW, outH).data;
-          var palette = gifenc.quantize(pixels, 256);
-          var indexed = gifenc.applyPalette(pixels, palette);
-          // duration is microseconds; GIF delays are milliseconds, and a
-          // zero delay renders as "as fast as possible" in most viewers,
-          // so keep a sane floor.
-          var delay = Math.max(20, Math.round((frame.duration || 100000) / 1000));
-          encoder.writeFrame(indexed, outW, outH, { palette: palette, delay: delay });
-          try { frame.close(); } catch (e) {}
-          return nextFrame();
-        });
-      }
-      return nextFrame();
+  // Settled from the bytes, so a static .gif never reaches a decoder at all
+  // and takes the ordinary canvas path instead.
+  if (countGifFrames(sourceBytes) < 2) return Promise.resolve(null);
+  return Promise.all([loadGifEncoder(), decodeGifFrames(sourceBytes)]).then(function (both) {
+    var gifenc = both[0], frames = both[1];
+    if (!frames || frames.length < 2) return null;
+    var encoder = gifenc.GIFEncoder();
+    var canvas = document.createElement("canvas");
+    canvas.width = outW; canvas.height = outH;
+    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+    frames.forEach(function (frame) {
+      ctx.clearRect(0, 0, outW, outH);
+      ctx.save();
+      drawFrame(ctx, frame.bitmap);
+      ctx.restore();
+      var pixels = ctx.getImageData(0, 0, outW, outH).data;
+      var palette = gifenc.quantize(pixels, 256);
+      var indexed = gifenc.applyPalette(pixels, palette);
+      encoder.writeFrame(indexed, outW, outH, { palette: palette, delay: frame.delayMs });
+      try { if (frame.bitmap.close) frame.bitmap.close(); } catch (e) {}
     });
+    encoder.finish();
+    return new Blob([encoder.bytes()], { type: "image/gif" });
   });
 }
 
@@ -7209,10 +7396,8 @@ function scanLibraryForFaces(rescanEverything) {
 
   return loadFaceApi().then(function () {
     status("Reading library…");
-    return sb.from("objects").select("*").eq("user_id", state.userId).in("kind", ["photo", "video"]);
-  }).then(function (res) {
-    if (res.error) throw res.error;
-    var records = res.data || [];
+    return fetchAllObjects(function (q) { return q.in("kind", ["photo", "video"]); });
+  }).then(function (records) {
     var queue = records.map(function (record) {
       // A row whose metadata won't decrypt (legacy or damaged) must not take
       // the whole scan down with it -- drop it and carry on.
@@ -7393,9 +7578,8 @@ function rebuildMissingThumbnails() {
   var status = $("#rebuild-thumbs-status");
   btn.disabled = true;
   status.textContent = "Checking previews…";
-  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
-    if (res.error) throw res.error;
-    var all = res.data || [];
+  return fetchAllObjects().then(function (allRows) {
+    var all = allRows;
     var todo = [];
     var checked = 0;
 
@@ -7488,8 +7672,8 @@ function fileEncryptedIntoFolder() {
   var status = $("#file-encrypted-status");
   btn.disabled = true;
   status.textContent = "Looking for encrypted items…";
-  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
-    if (res.error) throw res.error;
+  return fetchAllObjects().then(function (allRows) {
+    var res = { data: allRows };
     var todo = [];
     var unreadable = 0;
     (res.data || []).forEach(function (record) {
@@ -7723,8 +7907,8 @@ var reelsPrewarmPromise = null;
 function loadReelsIndex(mode) {
   mode = mode === "video" ? "video" : "all";
   var kinds = mode === "video" ? ["video"] : ["video", "photo"];
-  return sb.from("objects").select("*").eq("user_id", state.userId).in("kind", kinds).then(function (res) {
-    if (res.error) throw res.error;
+  return fetchAllObjects(function (q) { return q.in("kind", kinds); }).then(function (rows) {
+    var res = { data: rows };
     var recordsById = new Map();
     var items = (res.data || []).map(function (record) {
       recordsById.set(record.id, record);
