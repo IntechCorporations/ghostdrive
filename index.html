@@ -275,7 +275,12 @@
 
   .gallery.list-view { display: flex; flex-direction: column; gap: 3px; padding: 6px 28px 48px; }
   .list-view .thumb {
-    width: auto; height: auto; aspect-ratio: unset; display: flex; align-items: center; gap: 14px;
+    /* 100%, not auto: the gallery is a *column* flex container that still
+       has flex-wrap: wrap, so an auto-width row sizes to its own content
+       and simply overflows sideways instead of being squeezed. Pinning the
+       row to the container width is what gives the detail column something
+       to shrink against. */
+    width: 100%; height: auto; aspect-ratio: unset; display: flex; align-items: center; gap: 14px;
     border-radius: 8px; padding: 8px 12px;
   }
   .list-view .thumb img, .list-view .thumb video { width: 52px; height: 52px; flex: none; border-radius: 6px; object-fit: cover; }
@@ -298,13 +303,34 @@
   }
   .list-view .thumb .enc-badge { position: static; flex: none; align-self: center; }
   .list-view .thumb .name-label {
-    position: static; background: none; color: var(--text); padding: 0; flex: 1;
+    position: static; background: none; color: var(--text); padding: 0;
+    /* A floor on the name matters: the detail column grew when the
+       duplicates view started showing type, dimensions, storage and
+       folders, and an unshrinkable detail column squeezed the filename to
+       literally zero width. The name is the thing you identify a row by,
+       so it gets a minimum and the details give way instead. */
+    flex: 1 1 auto; min-width: 140px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px;
   }
   .list-view .thumb .info-row {
-    display: flex; gap: 14px; color: var(--text-dim); font-size: 12px; font-family: var(--mono); flex: none;
+    display: block; color: var(--text-dim); font-size: 12px; font-family: var(--mono);
+    flex: 0 1 auto; min-width: 0; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .list-compact .thumb img, .list-compact .thumb video, .list-compact .thumb .placeholder-box { display: none !important; }
+
+  .folder-rail { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 28px 10px; align-items: center; }
+  .folder-rail:empty { display: none; }
+  .folder-chip {
+    background: var(--ink-3); color: var(--text-dim); border: 1px solid transparent;
+    border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; white-space: nowrap;
+    font-family: var(--sans);
+  }
+  .folder-chip:hover { color: var(--text); filter: none; }
+  .folder-chip.active { background: var(--brass); color: #1c1406; border-color: var(--brass); }
+  /* Lit up while a selection is hovering over it mid-drag. */
+  .folder-chip.drop-target { border-color: var(--brass); background: var(--brass-tint); color: var(--text); }
+  .folder-rail-hint { font-size: 12px; color: var(--text-dim); margin-left: 4px; }
 
   .empty-state {
     text-align: center; color: var(--text-dim); padding: 90px 20px; font-size: 15px;
@@ -786,6 +812,9 @@
           <button type="button" id="btn-open-people" class="secondary">People</button>
           <button type="button" id="btn-rebuild-thumbs" class="secondary">Rebuild broken previews</button>
           <button type="button" id="btn-file-encrypted" class="secondary">File encrypted into a folder</button>
+          <button type="button" id="btn-find-duplicates" class="secondary">Find duplicates</button>
+          <button type="button" id="btn-select-dupe-extras" class="secondary hidden">Select extra copies</button>
+          <span id="find-duplicates-status" class="hint"></span>
           <span id="rebuild-thumbs-status" class="hint"></span>
           <span id="file-encrypted-status" class="hint"></span>
           <button id="btn-lock">Sign out</button>
@@ -827,6 +856,8 @@
               <option value="name_desc">Name (Z–A)</option>
               <option value="type_asc">File type (A–Z)</option>
               <option value="type_desc">File type (Z–A)</option>
+              <option value="folder_asc">Folder (A–Z)</option>
+              <option value="folder_desc">Folder (Z–A)</option>
               <option value="size_desc">Largest first</option>
               <option value="size_asc">Smallest first</option>
               <option value="duration_desc">Longest first</option>
@@ -850,9 +881,14 @@
       <div id="selection-bar">
         <span id="selection-count">0 selected</span>
         <span class="spacer"></span>
+        <button type="button" id="btn-selection-folder" class="secondary">Add to folder…</button>
+        <button type="button" id="btn-selection-unfolder" class="secondary hidden">Remove from this folder</button>
+        <span id="selection-status" class="hint"></span>
         <button type="button" id="btn-selection-deselect" class="secondary">Deselect (Esc)</button>
         <button type="button" id="btn-selection-delete" class="danger">Delete</button>
       </div>
+
+      <div id="folder-rail" class="folder-rail"></div>
 
       <div id="drop-zone">
         <div id="gallery" class="gallery"></div>
@@ -1641,7 +1677,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-11i organize-by-file-type";
+var GHOSTDRIVE_BUILD = "2026-09-14a multi-folder-drag-file";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -3619,7 +3655,8 @@ function prepareUpload(file, id, folder) {
           var metadata = {
             name: file.name, mime: file.type || "application/octet-stream", date: captured.date,
             dateSource: captured.source,
-            folder: folder, size: file.size, ext: fileExt(file.name), duration: thumbInfo.duration,
+            folders: folder ? [folder] : [], folder: folder,
+            size: file.size, ext: fileExt(file.name), duration: thumbInfo.duration,
             width: thumbInfo.width || null, height: thumbInfo.height || null,
             // Large files skip content encryption entirely (an explicit,
             // confirmed choice -- see r2UploadFileRaw). Recorded here (even
@@ -4366,9 +4403,319 @@ $("#search-input").addEventListener("input", function (e) {
 });
 function itemIsEncrypted(metaJson) { return metaJson.contentEncrypted !== false; }
 
+/* ---------------- Folders ----------------
+   A folder is a label, not a location: an item can carry several at once,
+   so filing something under "Receipts" no longer pulls it out of
+   "2024 trip". Older items stored a single name in `folder`, so EVERY read
+   goes through itemFolders() and that back-compat lives in one place
+   instead of at a dozen call sites. Writes always produce the `folders`
+   array, and keep `folder` pointing at the first of them so anything still
+   reading the old field sees something sensible rather than nothing. */
+function itemFolders(metaJson) {
+  if (!metaJson) return [];
+  if (Array.isArray(metaJson.folders)) return metaJson.folders.filter(Boolean);
+  return metaJson.folder ? [metaJson.folder] : [];
+}
+function foldersPatch(list) {
+  var clean = [];
+  (list || []).forEach(function (name) {
+    var trimmed = ((name || "") + "").trim();
+    if (trimmed && clean.indexOf(trimmed) === -1) clean.push(trimmed);
+  });
+  return { folders: clean, folder: clean[0] || "" };
+}
+function itemInFolder(metaJson, name) {
+  return itemFolders(metaJson).indexOf(name) !== -1;
+}
+// Adding is the common operation now that membership is a set.
+function foldersWith(metaJson, name) {
+  return foldersPatch(itemFolders(metaJson).concat([name]));
+}
+function parseFolderInput(text) {
+  return ((text || "") + "").split(",");
+}
+
+/* Ids currently being dragged. Set on dragstart, read by the folder chips'
+   drop handlers, cleared on dragend. Kept in a variable rather than read
+   back out of dataTransfer because dataTransfer.getData() is empty during
+   dragover in most browsers -- which is exactly when a chip needs to know
+   whether to light up. */
+var draggingItemIds = null;
+// Remembered so the rail can be redrawn on a selection change without
+// re-reading the whole library just to learn the folder names again.
+var lastAllFolders = [];
+
+/* Adds a folder to every given item, leaving any folders they already have
+   in place. This is the one write path for filing, shared by the drag
+   target and the selection-bar button. */
+function addItemsToFolder(ids, folderName) {
+  if (!ids || !ids.length || !folderName) return Promise.resolve();
+  knownFolders.add(folderName);
+  var status = $("#selection-status");
+  status.textContent = "Filing " + ids.length + "…";
+  return sb.from("objects").select("*").eq("user_id", state.userId).in("id", ids).then(function (res) {
+    if (res.error) throw res.error;
+    var records = res.data || [];
+    var at = 0, done = 0, failed = 0;
+    function step() {
+      if (at >= records.length) {
+        status.textContent = "Added " + done + ' to "' + folderName + '"' + (failed ? ", " + failed + " failed" : "") + ".";
+        setTimeout(function () {
+          if (status.textContent.indexOf("Added") === 0) status.textContent = "";
+        }, 5000);
+        refreshGallery();
+        return;
+      }
+      var record = records[at];
+      var loaded;
+      try { loaded = loadObjectMeta(record); } catch (e) { failed++; at++; return step(); }
+      if (itemInFolder(loaded.metaJson, folderName)) { done++; at++; return step(); } // already there
+      patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, foldersWith(loaded.metaJson, folderName))
+        .then(function () { done++; at++; step(); })
+        .catch(function () { failed++; at++; step(); });
+    }
+    step();
+  }).catch(function (err) {
+    status.textContent = "Couldn't file them: " + friendlyError(err);
+  });
+}
+
+/* The counterpart: takes one folder off the given items without touching
+   the others. Only offered while a folder is actually being viewed, since
+   "remove from this folder" needs a this. */
+function removeItemsFromFolder(ids, folderName) {
+  if (!ids || !ids.length || !folderName) return Promise.resolve();
+  var status = $("#selection-status");
+  status.textContent = "Removing " + ids.length + "…";
+  return sb.from("objects").select("*").eq("user_id", state.userId).in("id", ids).then(function (res) {
+    if (res.error) throw res.error;
+    var records = res.data || [];
+    var at = 0, done = 0, failed = 0;
+    function step() {
+      if (at >= records.length) {
+        status.textContent = "Removed " + done + ' from "' + folderName + '".';
+        setTimeout(function () {
+          if (status.textContent.indexOf("Removed") === 0) status.textContent = "";
+        }, 5000);
+        refreshGallery();
+        return;
+      }
+      var record = records[at];
+      var loaded;
+      try { loaded = loadObjectMeta(record); } catch (e) { failed++; at++; return step(); }
+      var remaining = itemFolders(loaded.metaJson).filter(function (f) { return f !== folderName; });
+      patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, foldersPatch(remaining))
+        .then(function () { done++; at++; step(); })
+        .catch(function () { failed++; at++; step(); });
+    }
+    step();
+  }).catch(function (err) {
+    status.textContent = "Couldn't remove them: " + friendlyError(err);
+  });
+}
+
+/* A row of folder chips that doubles as a filter and as the drop target for
+   dragging a selection into a folder. A <select> can't be dropped onto,
+   which is why this exists alongside the dropdown rather than replacing
+   it. */
+function renderFolderRail(allFolders) {
+  var rail = $("#folder-rail");
+  if (!rail) return;
+  var folders = Array.from(new Set([].concat(Array.from(knownFolders), allFolders || [])))
+    .sort(function (a, b) { return a.localeCompare(b); });
+  rail.innerHTML = "";
+
+  function chip(label, value, isNew) {
+    var el = document.createElement("button");
+    el.type = "button";
+    el.className = "folder-chip" + (!isNew && currentFolder === value ? " active" : "");
+    el.textContent = label;
+    el.addEventListener("click", function () {
+      if (isNew) {
+        var name = (prompt("Name this folder:") || "").trim();
+        if (!name) return;
+        knownFolders.add(name);
+        if (selectedIds.size && confirm('Add the ' + selectedIds.size + ' selected item(s) to "' + name + '" now?')) {
+          addItemsToFolder(Array.from(selectedIds), name);
+          return;
+        }
+        refreshGallery();
+        return;
+      }
+      currentFolder = value;
+      var select = $("#folder-select");
+      if (select) select.value = value;
+      refreshGallery();
+    });
+    if (!isNew && value) {
+      el.addEventListener("dragover", function (e) {
+        if (!draggingItemIds) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        el.classList.add("drop-target");
+      });
+      el.addEventListener("dragleave", function () { el.classList.remove("drop-target"); });
+      el.addEventListener("drop", function (e) {
+        el.classList.remove("drop-target");
+        if (!draggingItemIds) return;
+        e.preventDefault();
+        e.stopPropagation(); // don't let the OS-file drop handler see this
+        addItemsToFolder(draggingItemIds.slice(), value);
+        draggingItemIds = null;
+      });
+    }
+    rail.appendChild(el);
+  }
+
+  chip("All items", "");
+  folders.forEach(function (name) { chip(name, name); });
+  chip("+ New folder", null, true);
+  if (selectedIds.size) {
+    var hint = document.createElement("span");
+    hint.className = "folder-rail-hint";
+    hint.textContent = "Drag the selection onto a folder to file it there.";
+    rail.appendChild(hint);
+  }
+}
+
+$("#btn-selection-folder").addEventListener("click", function () {
+  if (!selectedIds.size) return;
+  var known = Array.from(knownFolders).sort().join(", ");
+  var name = (prompt("Add " + selectedIds.size + " item(s) to which folder?"
+    + (known ? "\n\nExisting: " + known : ""), currentFolder || "") || "").trim();
+  if (!name) return;
+  addItemsToFolder(Array.from(selectedIds), name);
+});
+$("#btn-selection-unfolder").addEventListener("click", function () {
+  if (!selectedIds.size || !currentFolder) return;
+  removeItemsFromFolder(Array.from(selectedIds), currentFolder);
+});
+
 /* Sort key for "organize by file type". Anything with no recorded
    extension sorts to the end rather than to the front, where a run of
    blanks would otherwise be the first thing you see. */
+/* ---------------- Find duplicates ----------------
+   Upload no longer blocks anything, so duplicates are dealt with after the
+   fact instead of being argued about beforehand. Same cheap identity as
+   before -- name plus exact byte size -- which is a strong hint rather
+   than proof: two genuinely different files can collide on it, which is
+   precisely why this SHOWS them for a human to look at rather than
+   deleting anything itself. */
+var duplicateIds = null;    // Set of ids in some duplicate group, or null when off
+var duplicateGroupCount = 0;
+
+function duplicateKey(name, size) {
+  return (name || "").trim().toLowerCase() + "|" + (size || 0);
+}
+
+/* Which copy in a group is worth keeping: an unencrypted one over an
+   encrypted one, since that's the copy that streams. Beyond that the first
+   seen wins -- there's nothing to separate them on. */
+function bestCopyIndex(group) {
+  for (var i = 0; i < group.length; i++) {
+    if (!itemIsEncrypted(group[i].metaJson)) return i;
+  }
+  return 0;
+}
+
+function findDuplicates() {
+  var btn = $("#btn-find-duplicates");
+  var status = $("#find-duplicates-status");
+  if (duplicateIds) { // already showing -- this click clears it
+    duplicateIds = null;
+    duplicateGroupCount = 0;
+    btn.textContent = "Find duplicates";
+    status.textContent = "";
+    $("#btn-select-dupe-extras").classList.add("hidden");
+    refreshGallery();
+    return Promise.resolve();
+  }
+  btn.disabled = true;
+  status.textContent = "Scanning…";
+  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
+    if (res.error) throw res.error;
+    var byKey = new Map();
+    var unreadable = 0;
+    (res.data || []).forEach(function (record) {
+      var loaded;
+      try { loaded = loadObjectMeta(record); } catch (e) { unreadable++; return; }
+      var key = duplicateKey(loaded.metaJson.name, loaded.metaJson.size);
+      var group = byKey.get(key) || [];
+      group.push({ id: record.id, metaJson: loaded.metaJson });
+      byKey.set(key, group);
+    });
+    var ids = new Set();
+    var groups = 0, extras = 0;
+    byKey.forEach(function (group) {
+      if (group.length < 2) return;
+      groups++;
+      extras += group.length - 1;
+      group.forEach(function (entry) { ids.add(entry.id); });
+    });
+    btn.disabled = false;
+    if (!groups) {
+      status.textContent = "No duplicates found" + (unreadable ? " (" + unreadable + " unreadable)" : "") + ".";
+      return;
+    }
+    duplicateIds = ids;
+    duplicateGroupCount = groups;
+    // A grid of near-identical thumbnails is no help for choosing between
+    // copies; the deciding details only render in list view.
+    if (currentViewMode === "grid") {
+      currentViewMode = "list";
+      $("#view-mode-select").value = "list";
+      try { localStorage.setItem(VIEW_MODE_KEY, currentViewMode); } catch (e) {}
+      applyViewMode();
+    }
+    btn.textContent = "Show everything";
+    status.textContent = ids.size + " items in " + groups + " group" + (groups === 1 ? "" : "s")
+      + " · " + extras + " extra" + (extras === 1 ? "" : "s") + " could go";
+    $("#btn-select-dupe-extras").classList.remove("hidden");
+    refreshGallery();
+  }).catch(function (err) {
+    btn.disabled = false;
+    status.textContent = "Couldn't scan: " + friendlyError(err);
+  });
+}
+$("#btn-find-duplicates").addEventListener("click", findDuplicates);
+
+/* Selects every copy EXCEPT the one worth keeping in each group, so the
+   existing Delete flow can clear them in one go. Deliberately a separate,
+   explicit step -- nothing is selected or removed by the scan itself. */
+function selectDuplicateExtras() {
+  if (!duplicateIds) return;
+  return sb.from("objects").select("*").eq("user_id", state.userId).then(function (res) {
+    if (res.error) throw res.error;
+    var byKey = new Map();
+    (res.data || []).forEach(function (record) {
+      if (!duplicateIds.has(record.id)) return;
+      var loaded;
+      try { loaded = loadObjectMeta(record); } catch (e) { return; }
+      var key = duplicateKey(loaded.metaJson.name, loaded.metaJson.size);
+      var group = byKey.get(key) || [];
+      group.push({ id: record.id, metaJson: loaded.metaJson });
+      byKey.set(key, group);
+    });
+    selectedIds.clear();
+    var picked = 0;
+    byKey.forEach(function (group) {
+      if (group.length < 2) return;
+      var keep = bestCopyIndex(group);
+      group.forEach(function (entry, i) {
+        if (i === keep) return;
+        selectedIds.add(entry.id);
+        picked++;
+      });
+    });
+    $("#find-duplicates-status").textContent = "Selected " + picked + " extra cop" + (picked === 1 ? "y" : "ies")
+      + " — one of each is kept. Review, then Delete.";
+    renderSelectionUI();
+  }).catch(function (err) {
+    $("#find-duplicates-status").textContent = "Couldn't select: " + friendlyError(err);
+  });
+}
+$("#btn-select-dupe-extras").addEventListener("click", selectDuplicateExtras);
+
 var UNKNOWN_TYPE_KEY = "\uffff";
 function itemTypeKey(metaJson) {
   return ((metaJson.ext || "") + "").toLowerCase() || UNKNOWN_TYPE_KEY;
@@ -4561,10 +4908,16 @@ function refreshGallery() {
       return { record: record, fileKey: loaded.fileKey, metaJson: loaded.metaJson };
     });
 
-    var allFolders = Array.from(new Set(allItems.map(function (it) { return it.metaJson.folder || ""; }).filter(Boolean)));
+    var allFolders = Array.from(new Set(allItems.reduce(function (acc, it) {
+      return acc.concat(itemFolders(it.metaJson));
+    }, [])));
+    lastAllFolders = allFolders;
     renderFolderOptions(allFolders);
+    renderFolderRail(allFolders);
 
-    var items = currentFolder ? allItems.filter(function (it) { return (it.metaJson.folder || "") === currentFolder; }) : allItems;
+    var items = currentFolder
+      ? allItems.filter(function (it) { return itemInFolder(it.metaJson, currentFolder); })
+      : allItems;
     var allExts = Array.from(new Set(allItems
       .map(function (it) { return ((it.metaJson.ext || "") + "").toLowerCase(); })
       .filter(Boolean)));
@@ -4583,9 +4936,10 @@ function refreshGallery() {
     if (currentSearch) {
       items = items.filter(function (it) {
         return (it.metaJson.name || "").toLowerCase().indexOf(currentSearch) !== -1
-            || (it.metaJson.folder || "").toLowerCase().indexOf(currentSearch) !== -1;
+            || itemFolders(it.metaJson).some(function (f) { return f.toLowerCase().indexOf(currentSearch) !== -1; });
       });
     }
+    if (duplicateIds) items = items.filter(function (it) { return duplicateIds.has(it.record.id); });
     if (currentPerson) {
       items = items.filter(function (it) {
         return (it.metaJson.people || []).indexOf(currentPerson) !== -1;
@@ -4593,7 +4947,9 @@ function refreshGallery() {
     }
     renderPersonOptions();
     $("#empty-state").classList.toggle("hidden", items.length > 0);
-    $("#empty-state").textContent = currentSearch
+    $("#empty-state").textContent = duplicateIds
+      ? "No duplicates left in this view."
+      : currentSearch
       ? 'Nothing matches "' + currentSearch + '".'
       : (currentFolder
           ? 'Nothing in "' + currentFolder + '" yet. Drag files in, or move some over from another folder.'
@@ -4609,7 +4965,7 @@ function refreshGallery() {
     // not -- it is the number you're working down, so it shouldn't vanish
     // the moment you narrow the view.
     var encryptedCount = allItems.reduce(function (n, it) { return n + (itemIsEncrypted(it.metaJson) ? 1 : 0); }, 0);
-    var countText = (currentFolder || currentType || currentPerson || currentEncryption || currentSearch)
+    var countText = (currentFolder || currentType || currentPerson || currentEncryption || currentSearch || duplicateIds)
       ? visibleCount + " of " + totalCount + " " + noun(totalCount)
       : totalCount + " " + noun(totalCount);
     if (encryptedCount) countText += " · " + encryptedCount + " encrypted";
@@ -4639,6 +4995,17 @@ function refreshGallery() {
         // Within a single type, fall back to alphabetical -- otherwise the
         // order inside each run of CR2s or HEICs is whatever the database
         // happened to hand back, which looks random.
+        case "folder_asc":
+        case "folder_desc": {
+          // An item can be in several folders; it sorts by its first, which
+          // is the one the folder field shows first too.
+          var fa = (itemFolders(ma)[0] || UNKNOWN_TYPE_KEY).toLowerCase();
+          var fb = (itemFolders(mb)[0] || UNKNOWN_TYPE_KEY).toLowerCase();
+          if (fa === fb) return cmpNullableLast(ma.name, mb.name, true);
+          if (fa === UNKNOWN_TYPE_KEY) return 1;   // unfiled last, both ways
+          if (fb === UNKNOWN_TYPE_KEY) return -1;
+          return currentSort === "folder_asc" ? fa.localeCompare(fb) : fb.localeCompare(fa);
+        }
         case "type_asc":
         case "type_desc": {
           var ta = itemTypeKey(ma), tb = itemTypeKey(mb);
@@ -4667,7 +5034,20 @@ function refreshGallery() {
        whole categories of file being separated out from the rest, which is
        not something the sort was ever asked to do. For any non-date sort
        the list stays flat and the order shown is exactly the order sorted. */
-    var groupByDay = currentSort === "date_desc" || currentSort === "date_asc";
+    /* In duplicates view the chosen sort is overridden so copies of the
+       same file sit next to each other -- comparing them is the entire
+       point and that's impossible if they're scattered down the list. The
+       copy worth keeping leads each run, so everything under it is extra. */
+    if (duplicateIds) {
+      items.sort(function (a, b) {
+        var ka = duplicateKey(a.metaJson.name, a.metaJson.size);
+        var kb = duplicateKey(b.metaJson.name, b.metaJson.size);
+        if (ka !== kb) return ka.localeCompare(kb);
+        return (itemIsEncrypted(a.metaJson) ? 1 : 0) - (itemIsEncrypted(b.metaJson) ? 1 : 0);
+      });
+    }
+
+    var groupByDay = !duplicateIds && (currentSort === "date_desc" || currentSort === "date_asc");
     var groups = [];
     if (groupByDay) {
       var groupsByKey = {};
@@ -5097,8 +5477,36 @@ function renderTile(record, metaJson) {
   if (metaJson.date) infoBits.push(formatGroupHeader(metaJson.date));
   if (metaJson.size !== undefined && metaJson.size !== null) infoBits.push(formatSize(metaJson.size));
   if (metaJson.duration) infoBits.push(formatDuration(metaJson.duration));
+  if (duplicateIds) {
+    /* Every copy in a group shares a name and a byte size by definition, so
+       those two tell them apart not at all -- which made the duplicates
+       view nearly useless for deciding which one to keep. These are the
+       fields that actually differ between copies. */
+    if (metaJson.ext) infoBits.push("." + String(metaJson.ext).toUpperCase());
+    if (metaJson.width && metaJson.height) infoBits.push(metaJson.width + "\u00d7" + metaJson.height);
+    infoBits.push(itemIsEncrypted(metaJson) ? "encrypted" : "streamable");
+    var dupFolders = itemFolders(metaJson);
+    infoBits.push(dupFolders.length ? dupFolders.join(" + ") : "unfiled");
+  }
   info.textContent = infoBits.join(" · ");
   tile.appendChild(info);
+
+  /* Dragging a tile that is part of the current selection drags the whole
+     selection; dragging one that isn't drags just that item. Same rule as
+     a desktop file manager, and it means filing a batch is select-then-drag
+     rather than one item at a time. */
+  tile.draggable = true;
+  tile.addEventListener("dragstart", function (e) {
+    draggingItemIds = selectedIds.has(record.id) ? Array.from(selectedIds) : [record.id];
+    try {
+      e.dataTransfer.setData("application/x-ghostdrive-items", draggingItemIds.join(","));
+      e.dataTransfer.effectAllowed = "copy";
+    } catch (err) {}
+  });
+  tile.addEventListener("dragend", function () {
+    draggingItemIds = null;
+    $$(".folder-chip").forEach(function (c) { c.classList.remove("drop-target"); });
+  });
 
   tile.addEventListener("click", function (e) {
     if (e.metaKey || e.ctrlKey) { e.preventDefault(); toggleSelect(record.id); return; }
@@ -5156,6 +5564,10 @@ function renderSelectionUI() {
   var n = selectedIds.size;
   bar.classList.toggle("active", n > 0);
   $("#selection-count").textContent = n + (n === 1 ? " selected" : " selected");
+  // "Remove from this folder" needs a *this* -- only meaningful while one
+  // is actually being viewed.
+  $("#btn-selection-unfolder").classList.toggle("hidden", !n || !currentFolder);
+  renderFolderRail(lastAllFolders);
 }
 
 function deleteSelected() {
@@ -5387,7 +5799,8 @@ function openViewer(id) {
     $("#viewer-filename").value = loaded.metaJson.name || "";
     $("#viewer-date").value = toDateInputValue(loaded.metaJson.date);
     $("#viewer-time").value = toTimeInputValue(loaded.metaJson.date);
-    $("#viewer-folder").value = loaded.metaJson.folder || "";
+    // Comma-separated, because an item can be in several folders now.
+    $("#viewer-folder").value = itemFolders(loaded.metaJson).join(", ");
     $("#btn-viewer-crop").classList.add("hidden");
     $("#btn-viewer-crop-icon").classList.add("hidden");
     $$(".viewer-photo-rotate").forEach(function (b) { b.classList.add("hidden"); });
@@ -6200,16 +6613,15 @@ $("#btn-trim-apply").addEventListener("click", function () {
 $("#btn-viewer-save").addEventListener("click", function () {
   if (!viewerState.id) return;
   var newDate = dateFieldsToIso($("#viewer-date").value, $("#viewer-time").value);
-  var newFolder = $("#viewer-folder").value.trim();
-  if (newFolder) knownFolders.add(newFolder);
+  var folderPatch = foldersPatch(parseFolderInput($("#viewer-folder").value));
+  folderPatch.folders.forEach(function (name) { knownFolders.add(name); });
   var updated = Object.assign({}, viewerState.metaJson, {
     name: $("#viewer-filename").value || viewerState.metaJson.name,
     date: newDate,
     // A hand-picked date is the authoritative one from here on -- recorded
     // so nothing later mistakes it for a filesystem-timestamp guess.
     dateSource: newDate ? "manual" : viewerState.metaJson.dateSource,
-    folder: newFolder,
-  });
+  }, folderPatch);
   var encryptedMetadata = toB64(encryptBytes(viewerState.fileKey, new TextEncoder().encode(JSON.stringify(updated))));
   sb.from("objects").update({ encrypted_metadata: encryptedMetadata }).eq("id", viewerState.id).then(function (res) {
     if (res.error) { console.error(res.error); return; }
@@ -6744,7 +7156,7 @@ function fileEncryptedIntoFolder() {
       // way, so it is counted and left alone rather than guessed at.
       try { loaded = loadObjectMeta(record); } catch (e) { unreadable++; return; }
       if (!itemIsEncrypted(loaded.metaJson)) return;
-      if ((loaded.metaJson.folder || "") === ENCRYPTED_FOLDER_NAME) return; // already filed
+      if (itemInFolder(loaded.metaJson, ENCRYPTED_FOLDER_NAME)) return; // already filed
       todo.push({ record: record, loaded: loaded });
     });
     if (!todo.length) {
@@ -6752,11 +7164,9 @@ function fileEncryptedIntoFolder() {
       btn.disabled = false;
       return;
     }
-    var alreadyFiled = todo.filter(function (t) { return (t.loaded.metaJson.folder || "") !== ""; }).length;
-    var warning = "Move " + todo.length + " encrypted item" + (todo.length === 1 ? "" : "s")
-      + ' into the folder "' + ENCRYPTED_FOLDER_NAME + '"?\n\n'
-      + "Nothing is deleted — this only changes which folder they're filed under."
-      + (alreadyFiled ? "\n\n" + alreadyFiled + " of them are currently in another folder and will be moved out of it." : "");
+    var warning = "Add " + todo.length + " encrypted item" + (todo.length === 1 ? "" : "s")
+      + ' to the folder "' + ENCRYPTED_FOLDER_NAME + '"?\n\n'
+      + "Nothing is deleted or moved — an item can be in several folders, so anything already filed somewhere stays there too.";
     if (!confirm(warning)) { status.textContent = ""; btn.disabled = false; return; }
 
     var at = 0, moved = 0, failed = 0;
@@ -6770,7 +7180,8 @@ function fileEncryptedIntoFolder() {
       }
       var item = todo[at];
       status.textContent = "Filing… " + (at + 1) + " of " + todo.length;
-      patchObjectMetadata(item.record, item.loaded.fileKey, item.loaded.metaJson, { folder: ENCRYPTED_FOLDER_NAME })
+      patchObjectMetadata(item.record, item.loaded.fileKey, item.loaded.metaJson,
+        foldersWith(item.loaded.metaJson, ENCRYPTED_FOLDER_NAME))
         .then(function () { moved++; at++; step(); })
         .catch(function () { failed++; at++; step(); });
     }
