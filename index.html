@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-15i self-update";
+var GHOSTDRIVE_BUILD = "2026-09-15j private-folder";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -399,6 +399,31 @@ checkForNewerBuild();
   .idle-warning.hidden { display: none; }
   .idle-warning button { padding: 6px 12px; font-size: 12.5px; }
   @media (max-width: 640px) { .idle-warning { margin: 0 16px 10px; } }
+
+  /* ---- Private folder ---- */
+  .vault-footer { display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 18px 28px 26px; margin-top: 8px; }
+  .vault-footer .footer-dot { width: 26px; height: 26px; border-radius: 50%; border: 0;
+    background: transparent; cursor: default; padding: 0; opacity: .22;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+    transition: opacity .2s, transform .2s, background .2s; }
+  .vault-footer .footer-dot::after { content: ""; display: block; width: 5px; height: 5px;
+    margin: 10px auto; border-radius: 50%; background: var(--text-dim); transition: background .2s; }
+  .vault-footer .footer-dot:hover { opacity: .5; }
+  .vault-footer .footer-dot.holding { opacity: 1; transform: scale(1.35); background: rgba(255,255,255,.07); }
+  .vault-footer .footer-dot.holding::after { background: var(--accent, #6ea8fe); }
+  .vault-footer .footer-note { font-size: 11px; color: var(--text-dim); opacity: .45; font-family: var(--mono); }
+
+  .private-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    margin: 0 28px 12px; padding: 12px 16px; border-radius: 10px;
+    background: rgba(110,168,254,.08); border: 1px solid rgba(110,168,254,.28); }
+  .private-bar.hidden { display: none; }
+  .private-bar .pb-title { font-weight: 600; letter-spacing: .02em; }
+  .private-bar .pb-sub { font-size: 12px; color: var(--text-dim); }
+  .private-bar .spacer { flex: 1 1 auto; }
+  .pb-toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; user-select: none; }
+  .pb-toggle input { width: 16px; height: 16px; cursor: pointer; }
+  .folder-chip.private-chip { border-color: rgba(110,168,254,.5); background: rgba(110,168,254,.12); }
 
   .folder-rail { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 28px 10px; align-items: center; }
   .folder-rail:empty { display: none; }
@@ -944,6 +969,8 @@ checkForNewerBuild();
           </div>
           <div class="sort-control">
             <select id="sort-select">
+              <option value="added_desc" selected>Recently added</option>
+              <option value="added_asc">Added earliest</option>
               <option value="date_desc">Newest first</option>
               <option value="date_asc">Oldest first</option>
               <option value="name_asc">Name (A–Z)</option>
@@ -987,11 +1014,30 @@ checkForNewerBuild();
         <button type="button" id="btn-idle-stay">Stay signed in</button>
       </div>
 
+      <div id="private-bar" class="private-bar hidden">
+        <span class="pb-title">Private</span>
+        <span class="pb-sub" id="pb-count"></span>
+        <span class="spacer"></span>
+        <label class="pb-toggle" title="When on, these items are mixed into the shuffle/scroll feed.">
+          <input type="checkbox" id="pb-in-feed">
+          <span>Include in scroll feed</span>
+        </label>
+        <button type="button" id="btn-private-add" class="secondary">Move selected here</button>
+        <button type="button" id="btn-private-lock" class="secondary">Lock</button>
+      </div>
+
       <div id="folder-rail" class="folder-rail"></div>
 
       <div id="drop-zone">
         <div id="gallery" class="gallery"></div>
         <p id="empty-state" class="empty-state hidden">Nothing here yet. Drag files in, or add photos and videos above.</p>
+      </div>
+
+      <!-- The footer dot is the private-folder entrance. It is deliberately
+           unlabelled and nearly invisible: a press-and-hold, not a click,
+           so a stray tap by someone else reveals nothing at all. -->
+      <div class="vault-footer">
+        <button type="button" id="footer-dot" class="footer-dot" aria-label="&nbsp;" title=""></button>
       </div>
     </div>
   </section>
@@ -1776,7 +1822,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-15i self-update";
+var GHOSTDRIVE_BUILD = "2026-09-15j private-folder";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -1821,6 +1867,7 @@ function isGoogleUser(user) {
 function enterVault() {
   saveDeviceKey();
   showScreen("#screen-vault");
+  bindPrivateControls();
   // Armed here as well as on activity: signing in and immediately walking
   // away is exactly the case this exists for, and that produces no events.
   armIdleSignOut();
@@ -3827,6 +3874,12 @@ function prepareUpload(file, id, folder) {
           var metadata = {
             name: file.name, mime: file.type || "application/octet-stream", date: captured.date,
             dateSource: captured.source,
+            /* When this file was added to the library, as opposed to when it
+               was taken. Sorting by capture date buries a freshly uploaded
+               old photo thousands of items down, which is the opposite of
+               what you want right after uploading it. Never displayed --
+               it only drives the "Recently added" sort. */
+            uploadedAt: new Date().toISOString(),
             folders: folder ? [folder] : [], folder: folder,
             size: file.size, ext: fileExt(file.name), duration: thumbInfo.duration,
             width: thumbInfo.width || null, height: thumbInfo.height || null,
@@ -4544,7 +4597,7 @@ function dateFieldsToIso(dateValue, timeValue) {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-var currentSort = "date_desc";
+var currentSort = "added_desc";  // recent uploads at the top by default
 $("#sort-select").addEventListener("change", function (e) { currentSort = e.target.value; refreshGallery(); });
 
 var currentType = "";
@@ -4608,6 +4661,65 @@ function itemIsEncrypted(metaJson) { return metaJson.contentEncrypted !== false;
    instead of at a dozen call sites. Writes always produce the `folders`
    array, and keep `folder` pointing at the first of them so anything still
    reading the old field sees something sensible rather than nothing. */
+/* ---------------- Private ("secret") folder ----------------
+   One reserved folder name marks an item private. The name uses control
+   characters so it can never collide with a folder someone types, and so
+   it never shows up in the folder rail or the folder dropdown.
+
+   Locked is the default on EVERY page load -- deliberately not persisted.
+   Privacy that survives a refresh is privacy that survives someone else
+   picking up the phone, which is the opposite of the point.
+
+   While locked, private items are stripped out where the library is read
+   (filterPrivate, used by refreshGallery and both duplicate scans), so
+   they are absent from the grid, search, counts, type/folder lists and
+   duplicate results alike -- not merely hidden with CSS, which would still
+   leave them sitting in the DOM for anyone who looked.
+
+   The feed is the one deliberate exception, and only when the in-feed
+   toggle is on. That setting IS persisted, because it is a preference
+   about the feed rather than an unlocked state. */
+var PRIVATE_FOLDER = "\u0001private\u0001";
+var PRIVATE_IN_FEED_KEY = "ghostdrive-private-in-feed";
+var privateUnlocked = false;           // never persisted -- see above
+var privateInFeed = (function () {
+  try { return localStorage.getItem(PRIVATE_IN_FEED_KEY) === "1"; } catch (e) { return false; }
+})();
+function setPrivateInFeed(on) {
+  privateInFeed = !!on;
+  try { localStorage.setItem(PRIVATE_IN_FEED_KEY, privateInFeed ? "1" : "0"); } catch (e) {}
+  // The staged feed order was built under the old setting -- drop it so the
+  // next open rebuilds with (or without) the private items.
+  reelsPrewarmPromise = null;
+  reelsPrewarmMode = null;
+}
+function isPrivateItem(metaJson) {
+  return itemFolders(metaJson).indexOf(PRIVATE_FOLDER) !== -1;
+}
+// Strips private items unless the vault is unlocked this session.
+function filterPrivate(items, getMeta) {
+  if (privateUnlocked) return items;
+  return items.filter(function (it) { return !isPrivateItem(getMeta ? getMeta(it) : it.metaJson); });
+}
+// Folder names shown anywhere in the UI never include the reserved one.
+/* Library-wide maintenance passes (face scan, thumbnail rebuild, filing
+   encrypted items) must not touch private rows while locked. The filing
+   pass is the one that genuinely leaked: it would add a private item to a
+   visible "Encrypted" folder, putting it straight into the grid. The other
+   two are quieter -- they would decrypt private items and fold them into
+   counts and person lists -- but the same rule is the simple one. */
+function withoutPrivateRows(rows) {
+  if (privateUnlocked) return rows || [];
+  return (rows || []).filter(function (record) {
+    try { return !isPrivateItem(loadObjectMeta(record).metaJson); }
+    catch (e) { return true; }   // unreadable rows were never private-tagged for us
+  });
+}
+
+function visibleFolderNames(list) {
+  return (list || []).filter(function (n) { return n !== PRIVATE_FOLDER; });
+}
+
 function itemFolders(metaJson) {
   if (!metaJson) return [];
   if (Array.isArray(metaJson.folders)) return metaJson.folders.filter(Boolean);
@@ -4836,12 +4948,128 @@ function removeItemsFromFolder(ids, folderName) {
    dragging a selection into a folder. A <select> can't be dropped onto,
    which is why this exists alongside the dropdown rather than replacing
    it. */
+/* ---------------- Private folder: unlock, lock, UI ----------------
+   The entrance is a press-and-hold on an unlabelled dot in the footer.
+   A hold rather than a tap means a curious tap reveals nothing, and there
+   is no button text, tooltip or aria-label naming what it opens. */
+var PRIVATE_HOLD_MS = 1500;
+var privateHoldTimer = null;
+
+function unlockPrivate() {
+  privateUnlocked = true;
+  currentFolder = PRIVATE_FOLDER;
+  var sel = $("#folder-select");
+  if (sel) sel.value = "";
+  refreshGallery();
+}
+function lockPrivate() {
+  privateUnlocked = false;
+  if (currentFolder === PRIVATE_FOLDER) currentFolder = "";
+  // Nothing private may stay selected across a lock -- a selection that
+  // outlived the lock would let a later action touch items the person can
+  // no longer see.
+  selectedIds.clear();
+  refreshGallery();
+}
+function renderPrivateBar(allItems) {
+  var bar = $("#private-bar");
+  if (!bar) return;
+  var showing = privateUnlocked && currentFolder === PRIVATE_FOLDER;
+  bar.classList.toggle("hidden", !showing);
+  if (!showing) return;
+  var n = (allItems || []).filter(function (it) { return isPrivateItem(it.metaJson); }).length;
+  var countEl = $("#pb-count");
+  if (countEl) countEl.textContent = n === 1 ? "1 item · hidden everywhere else" : n + " items · hidden everywhere else";
+  var cb = $("#pb-in-feed");
+  if (cb) cb.checked = privateInFeed;
+}
+
+var privateControlsBound = false;
+function bindPrivateControls() {
+  // enterVault can run more than once in a session (re-auth, key
+  // re-entry); binding twice would double-fire every handler.
+  if (privateControlsBound) return;
+  privateControlsBound = true;
+  var dot = $("#footer-dot");
+  if (dot) {
+    var start = function (e) {
+      if (e.type === "mousedown" && e.button !== 0) return;
+      clearTimeout(privateHoldTimer);
+      dot.classList.add("holding");
+      privateHoldTimer = setTimeout(function () {
+        dot.classList.remove("holding");
+        unlockPrivate();
+      }, PRIVATE_HOLD_MS);
+    };
+    var cancel = function () {
+      clearTimeout(privateHoldTimer);
+      privateHoldTimer = null;
+      dot.classList.remove("holding");
+    };
+    dot.addEventListener("mousedown", start);
+    dot.addEventListener("touchstart", start, { passive: true });
+    ["mouseup", "mouseleave", "touchend", "touchcancel", "touchmove"].forEach(function (ev) {
+      dot.addEventListener(ev, cancel);
+    });
+    // A hold on touch otherwise raises the OS text-selection/callout menu.
+    dot.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  }
+  var lock = $("#btn-private-lock");
+  if (lock) lock.addEventListener("click", lockPrivate);
+
+  var cb = $("#pb-in-feed");
+  if (cb) cb.addEventListener("change", function (e) { setPrivateInFeed(e.target.checked); });
+
+  var add = $("#btn-private-add");
+  if (add) add.addEventListener("click", function () {
+    if (!selectedIds.size) {
+      var st = $("#selection-status");
+      if (st) st.textContent = "Select some items first, then move them here.";
+      return;
+    }
+    addItemsToFolder(Array.from(selectedIds), PRIVATE_FOLDER);
+  });
+}
+
 function renderFolderRail(allFolders) {
   var rail = $("#folder-rail");
   if (!rail) return;
-  var folders = Array.from(new Set([].concat(Array.from(knownFolders), allFolders || [])))
+  var folders = visibleFolderNames(Array.from(new Set([].concat(Array.from(knownFolders), allFolders || []))))
     .sort(function (a, b) { return a.localeCompare(b); });
   rail.innerHTML = "";
+
+  /* While unlocked, one chip leads back into the private folder -- without
+     it, opening any other folder would strand the person with no route
+     back short of locking and re-holding the dot. It is rendered only when
+     already unlocked, so it never hints at anything while locked. */
+  if (privateUnlocked) {
+    var pc = document.createElement("button");
+    pc.type = "button";
+    pc.className = "folder-chip private-chip" + (currentFolder === PRIVATE_FOLDER ? " active" : "");
+    pc.textContent = "Private";
+    pc.addEventListener("click", function () {
+      currentFolder = PRIVATE_FOLDER;
+      var sel = $("#folder-select");
+      if (sel) sel.value = "";
+      refreshGallery();
+    });
+    pc.addEventListener("dragover", function (e) {
+      if (!draggingItemIds) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      pc.classList.add("drop-target");
+    });
+    pc.addEventListener("dragleave", function () { pc.classList.remove("drop-target"); });
+    pc.addEventListener("drop", function (e) {
+      pc.classList.remove("drop-target");
+      if (!draggingItemIds) return;
+      e.preventDefault();
+      e.stopPropagation();
+      addItemsToFolder(draggingItemIds.slice(), PRIVATE_FOLDER);
+      draggingItemIds = null;
+    });
+    rail.appendChild(pc);
+  }
 
   function chip(label, value, isNew) {
     var el = document.createElement("button");
@@ -4988,7 +5216,10 @@ function findDuplicates() {
   btn.disabled = true;
   status.textContent = "Scanning…";
   return fetchAllObjects().then(function (allRows) {
-    var res = { data: allRows };
+    var res = { data: allRows.filter(function (record) {
+      if (privateUnlocked) return true;
+      try { return !isPrivateItem(loadObjectMeta(record).metaJson); } catch (e) { return true; }
+    }) };
     var byKey = new Map();
     var unreadable = 0;
     (res.data || []).forEach(function (record) {
@@ -5040,7 +5271,10 @@ $("#btn-find-duplicates").addEventListener("click", findDuplicates);
 function selectDuplicateExtras() {
   if (!duplicateIds) return;
   return fetchAllObjects().then(function (allRows) {
-    var res = { data: allRows };
+    var res = { data: allRows.filter(function (record) {
+      if (privateUnlocked) return true;
+      try { return !isPrivateItem(loadObjectMeta(record).metaJson); } catch (e) { return true; }
+    }) };
     var byKey = new Map();
     (res.data || []).forEach(function (record) {
       if (!duplicateIds.has(record.id)) return;
@@ -5209,7 +5443,10 @@ $("#folder-select").addEventListener("change", function (e) {
 });
 
 function renderFolderOptions(allFolders) {
-  var folders = Array.from(new Set([].concat(Array.from(knownFolders), allFolders || []))).sort(function (a, b) {
+  // The reserved private name is stripped here too -- knownFolders picks it
+  // up when items are filed into it, and without this it would appear as an
+  // ordinary option in the dropdown even while locked.
+  var folders = visibleFolderNames(Array.from(new Set([].concat(Array.from(knownFolders), allFolders || [])))).sort(function (a, b) {
     return a.localeCompare(b);
   });
   var select = $("#folder-select");
@@ -5278,9 +5515,15 @@ function refreshGallery() {
         "Their rows exist but the metadata won't open with this vault key.");
     }
 
-    var allFolders = Array.from(new Set(allItems.reduce(function (acc, it) {
+    /* Private items leave the dataset here, before folder lists, type
+       lists, counts, search and the grid are all derived from it -- so
+       while locked there is no path by which one can surface. */
+    allItems = filterPrivate(allItems);
+    renderPrivateBar(allItems);
+
+    var allFolders = visibleFolderNames(Array.from(new Set(allItems.reduce(function (acc, it) {
       return acc.concat(itemFolders(it.metaJson));
-    }, [])));
+    }, []))));
     lastAllFolders = allFolders;
     renderFolderOptions(allFolders);
     renderFolderRail(allFolders);
@@ -5349,6 +5592,17 @@ function refreshGallery() {
     var allIds = new Set(allItems.map(function (it) { return it.record.id; }));
     selectedIds.forEach(function (id) { if (!allIds.has(id)) selectedIds.delete(id); });
 
+    /* Upload time, newest-first, for items that predate the uploadedAt
+       stamp. created_at is whatever the table supplies (it comes back with
+       select("*") when the column exists); capture date is the last
+       resort so every item still sorts somewhere sensible rather than
+       clumping at one end. */
+    function uploadKey(it) {
+      return (it.metaJson && it.metaJson.uploadedAt)
+        || (it.record && it.record.created_at)
+        || (it.metaJson && it.metaJson.date)
+        || "";
+    }
     function cmpNullableLast(a, b, asc) {
       var an = (a === undefined || a === null || a === ""), bn = (b === undefined || b === null || b === "");
       if (an && bn) return 0;
@@ -5360,6 +5614,8 @@ function refreshGallery() {
     items.sort(function (a, b) {
       var ma = a.metaJson, mb = b.metaJson;
       switch (currentSort) {
+        case "added_desc": return cmpNullableLast(uploadKey(a), uploadKey(b), false);
+        case "added_asc": return cmpNullableLast(uploadKey(a), uploadKey(b), true);
         case "date_asc": return cmpNullableLast(ma.date, mb.date, true);
         case "name_asc": return cmpNullableLast(ma.name, mb.name, true);
         case "name_desc": return cmpNullableLast(ma.name, mb.name, false);
@@ -7468,7 +7724,8 @@ function scanLibraryForFaces(rescanEverything) {
   return loadFaceApi().then(function () {
     status("Reading library…");
     return fetchAllObjects(function (q) { return q.in("kind", ["photo", "video"]); });
-  }).then(function (records) {
+  }).then(function (rawRecords) {
+    var records = withoutPrivateRows(rawRecords);
     var queue = records.map(function (record) {
       // A row whose metadata won't decrypt (legacy or damaged) must not take
       // the whole scan down with it -- drop it and carry on.
@@ -7650,7 +7907,7 @@ function rebuildMissingThumbnails() {
   btn.disabled = true;
   status.textContent = "Checking previews…";
   return fetchAllObjects().then(function (allRows) {
-    var all = allRows;
+    var all = withoutPrivateRows(allRows);
     var todo = [];
     var checked = 0;
 
@@ -7744,7 +8001,7 @@ function fileEncryptedIntoFolder() {
   btn.disabled = true;
   status.textContent = "Looking for encrypted items…";
   return fetchAllObjects().then(function (allRows) {
-    var res = { data: allRows };
+    var res = { data: withoutPrivateRows(allRows) };
     var todo = [];
     var unreadable = 0;
     (res.data || []).forEach(function (record) {
@@ -7981,10 +8238,17 @@ function loadReelsIndex(mode) {
   return fetchAllObjects(function (q) { return q.in("kind", kinds); }).then(function (rows) {
     var res = { data: rows };
     var recordsById = new Map();
-    var items = (res.data || []).map(function (record) {
+    var items = [];
+    (res.data || []).forEach(function (record) {
+      var loaded;
+      try { loaded = loadObjectMeta(record); } catch (e) { return; }
+      /* The feed is the one place private items may appear while the
+         vault is locked -- and only because the toggle inside the private
+         folder explicitly asked for it. Unlocked, they are simply part of
+         the library and follow the normal rules. */
+      if (isPrivateItem(loaded.metaJson) && !privateInFeed && !privateUnlocked) return;
       recordsById.set(record.id, record);
-      var loaded = loadObjectMeta(record);
-      return { id: record.id, date: loaded.metaJson.date || "" };
+      items.push({ id: record.id, date: loaded.metaJson.date || "" });
     });
     items.sort(function (a, b) { return a.date < b.date ? 1 : a.date > b.date ? -1 : 0; }); // newest first
     var order = items.map(function (it) { return it.id; });
