@@ -5,6 +5,77 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ghostdrive</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<script>
+(function(){
+var GHOSTDRIVE_BUILD = "2026-09-15i self-update";
+/* ---------------- Stale-build self-healing ----------------
+   The service worker registration below already handles a stale *worker*.
+   It does NOT handle Chrome's ordinary HTTP cache serving a stale
+   index.html, which is a separate failure with identical symptoms: the
+   app boots an old build, and every fix shipped since is simply absent.
+   That produced a long, expensive debugging detour -- a GIF fix and a
+   1000-row paging fix were both live on the server while the browser kept
+   running the build from before them, so the fixes looked broken when they
+   were only unreachable.
+
+   This re-fetches index.html with cache:"no-store" (which bypasses the
+   HTTP cache entirely, unlike a normal reload) and compares the build
+   stamp in the served copy against the one this page is running. A
+   mismatch means the browser is holding something older than what is
+   deployed, so it clears caches and reloads once.
+
+   The reloadedFor guard is what keeps this from looping: the flag records
+   WHICH build we reloaded for, so if the reload somehow comes back on the
+   old build again (proxy cache, offline, a CDN still catching up) it will
+   not reload a second time for the same target. */
+function checkForNewerBuild() {
+  try {
+    if (!("fetch" in window) || location.protocol === "file:") return;
+    fetch("index.html?_=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (text) {
+        if (!text) return;
+        var m = text.match(/GHOSTDRIVE_BUILD\s*=\s*"([^"]+)"/);
+        if (!m) return;
+        var served = m[1];
+        if (served === GHOSTDRIVE_BUILD) return;
+
+        var flag = "ghostdrive-reloaded-for";
+        var already = null;
+        try { already = sessionStorage.getItem(flag); } catch (e) {}
+        if (already === served) {
+          console.warn("[ghostdrive] server has build", served, "but reload did not take effect -- not retrying.");
+          return;
+        }
+        try { sessionStorage.setItem(flag, served); } catch (e) {}
+
+        console.warn("[ghostdrive] stale build", GHOSTDRIVE_BUILD, "-> updating to", served);
+
+        var done = function () { location.reload(); };
+        var jobs = [];
+        if (window.caches && caches.keys) {
+          jobs.push(caches.keys().then(function (keys) {
+            return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+          }).catch(function () {}));
+        }
+        if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+          jobs.push(navigator.serviceWorker.getRegistrations().then(function (regs) {
+            return Promise.all(regs.map(function (reg) {
+              return reg.update().catch(function () {});
+            }));
+          }).catch(function () {}));
+        }
+        // Reload regardless of whether the cleanup promises settle -- a
+        // hung cache API must not strand the user on the old build.
+        var t = setTimeout(done, 2500);
+        Promise.all(jobs).then(function () { clearTimeout(t); done(); }, function () { clearTimeout(t); done(); });
+      })
+      .catch(function () {});
+  } catch (e) {}
+}
+checkForNewerBuild();
+})();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
@@ -1705,7 +1776,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-15h paging-and-gif-fallback";
+var GHOSTDRIVE_BUILD = "2026-09-15i self-update";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
