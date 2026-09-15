@@ -331,6 +331,8 @@
   /* Lit up while a selection is hovering over it mid-drag. */
   .folder-chip.drop-target { border-color: var(--brass); background: var(--brass-tint); color: var(--text); }
   .folder-rail-hint { font-size: 12px; color: var(--text-dim); margin-left: 4px; }
+  .folder-chip.folder-toggle { background: transparent; border-color: var(--line); color: var(--text-dim); }
+  .folder-chip.folder-toggle:hover { border-color: var(--text-dim); color: var(--text); }
 
   .empty-state {
     text-align: center; color: var(--text-dim); padding: 90px 20px; font-size: 15px;
@@ -545,6 +547,8 @@
     font-size: 12px; padding: 4px 10px; border-radius: 20px; cursor: pointer;
   }
   .log-trigger:hover { color: var(--text); border-color: var(--text-dim); }
+  .log-trigger:disabled { opacity: 0.4; cursor: default; }
+  .log-trigger:disabled:hover { color: var(--text-dim); border-color: var(--line); }
   .log-badge {
     display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px;
     margin-left: 6px; padding: 0 4px; border-radius: 10px; background: var(--danger); color: #fff;
@@ -803,7 +807,14 @@
         <div class="header-actions">
           <label class="upload-btn">
             <button type="button" id="btn-choose-files">+ Add photos &amp; videos</button>
-            <input type="file" id="file-input" accept="image/*,video/*,.cr2,.cr3,.nef,.arw,.dng,.orf,.rw2,.raf,.pef,.srw,.heic,.heif,.zip" multiple hidden>
+            <!-- Video extensions are listed explicitly as well as video/*.
+                 The OS picker maps an extension to a MIME type using its own
+                 table, and .m4v and .mkv are routinely missing from it, so
+                 "video/*" alone greys those files out even though everything
+                 downstream handles them. Drag-and-drop never consulted this
+                 list, which is why dropping an .m4v always worked while
+                 picking one didn't. -->
+            <input type="file" id="file-input" accept="image/*,video/*,.mp4,.m4v,.mov,.mkv,.avi,.webm,.3gp,.ogv,.cr2,.cr3,.nef,.arw,.dng,.orf,.rw2,.raf,.pef,.srw,.heic,.heif,.zip" multiple hidden>
           </label>
           <button type="button" id="btn-choose-files-resumable" class="secondary hidden" title="Large videos added this way keep uploading even if you close this tab (Chrome/Edge only)">+ Add large files (resumable)</button>
           <button type="button" id="btn-import-google-photos" class="secondary">Import from Google Photos</button>
@@ -825,6 +836,8 @@
         <div class="toolbar-left">
           <span id="upload-status"></span>
           <span id="file-count"></span>
+          <button type="button" id="btn-undo" class="log-trigger" title="Undo (Ctrl+Z)" disabled>&#8630; Undo</button>
+          <button type="button" id="btn-redo" class="log-trigger" title="Redo (Ctrl+Shift+Z)" disabled>&#8631; Redo</button>
           <button type="button" id="btn-open-log" class="log-trigger">Upload log<span id="log-badge" class="log-badge hidden">0</span></button>
           <button type="button" id="btn-open-errors" class="log-trigger">Errors<span id="error-badge" class="log-badge hidden">0</span></button>
         </div>
@@ -1677,7 +1690,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-14a multi-folder-drag-file";
+var GHOSTDRIVE_BUILD = "2026-09-15e allow-m4v";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -3397,9 +3410,25 @@ function queueGetAll() {
   });
 }
 if ("serviceWorker" in navigator) {
-  // Relative to index.html, so this also works served out of a subpath
-  // (e.g. GitHub Pages' /ghostdrive/).
-  navigator.serviceWorker.register("sw.js").catch(function () {});
+  /* Relative to index.html, so this also works served out of a subpath
+     (e.g. GitHub Pages' /ghostdrive/).
+     updateViaCache:"none" stops the browser serving itself a cached copy of
+     the worker script, and update() forces a check on every load, so a
+     deploy lands when it ships rather than on the browser's own schedule.
+     The failure branch matters just as much. If sw.js 404s -- renamed,
+     never uploaded, moved -- the browser does NOT discard the worker it
+     already has. It keeps running the old one forever, with no route to
+     replace it, which is a zombie that can serve a stale app indefinitely
+     and looks exactly like "my changes aren't showing up". So an
+     unreachable script is read as "there should be no worker here" and any
+     surviving registration is torn down. */
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" })
+    .then(function (reg) { try { reg.update(); } catch (e) {} })
+    .catch(function () {
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        regs.forEach(function (reg) { reg.unregister().catch(function () {}); });
+      }).catch(function () {});
+    });
 }
 function registerBackgroundSync() {
   if (!("serviceWorker" in navigator)) return;
@@ -4440,10 +4469,117 @@ function parseFolderInput(text) {
    back out of dataTransfer because dataTransfer.getData() is empty during
    dragover in most browsers -- which is exactly when a chip needs to know
    whether to light up. */
+/* ---------------- Undo / redo ----------------
+   Covers metadata edits -- filing into folders, removing from them,
+   renaming, date changes -- which are the operations that hit many items
+   at once and so are the ones worth being able to take back. An entry is
+   just the before and after patch for each item it touched, so undoing is
+   re-applying the "before" and redoing is re-applying the "after".
+   Deliberately NOT covered: delete, crop, rotate and trim. Those destroy or
+   overwrite the actual bytes in storage, and an undo button that silently
+   fails on half the things it appears to offer is worse than one with an
+   honest boundary. Delete stays behind its confirmation instead. */
+var UNDO_MAX = 30;
+var undoStack = [];
+var redoStack = [];
+
+function renderUndoUI() {
+  var undoBtn = $("#btn-undo"), redoBtn = $("#btn-redo");
+  if (!undoBtn || !redoBtn) return;
+  undoBtn.disabled = !undoStack.length;
+  redoBtn.disabled = !redoStack.length;
+  undoBtn.title = undoStack.length
+    ? "Undo: " + undoStack[undoStack.length - 1].label + " (Ctrl+Z)"
+    : "Nothing to undo";
+  redoBtn.title = redoStack.length
+    ? "Redo: " + redoStack[redoStack.length - 1].label + " (Ctrl+Shift+Z)"
+    : "Nothing to redo";
+}
+
+// entry: { label, items: [{ id, before: {...}, after: {...} }] }
+function pushUndo(label, items) {
+  if (!items || !items.length) return;
+  undoStack.push({ label: label, items: items });
+  if (undoStack.length > UNDO_MAX) undoStack.shift();
+  redoStack.length = 0; // a fresh action invalidates the redo branch
+  renderUndoUI();
+}
+
+function applyUndoEntry(entry, direction) {
+  var status = $("#selection-status");
+  var ids = entry.items.map(function (i) { return i.id; });
+  if (status) status.textContent = (direction === "undo" ? "Undoing " : "Redoing ") + entry.label + "…";
+  return sb.from("objects").select("*").eq("user_id", state.userId).in("id", ids).then(function (res) {
+    if (res.error) throw res.error;
+    var byId = new Map();
+    (res.data || []).forEach(function (r) { byId.set(r.id, r); });
+    var at = 0, done = 0, missing = 0, failed = 0;
+    return new Promise(function (resolve) {
+      function step() {
+        if (at >= entry.items.length) {
+          if (status) {
+            var parts = [(direction === "undo" ? "Undid " : "Redid ") + done + " change" + (done === 1 ? "" : "s")];
+            // An item deleted since the action can't be put back by this --
+            // say so rather than reporting a clean success.
+            if (missing) parts.push(missing + " no longer exist");
+            if (failed) parts.push(failed + " failed");
+            status.textContent = parts.join(", ") + ".";
+            setTimeout(function () {
+              if (status.textContent.indexOf("Und") === 0 || status.textContent.indexOf("Red") === 0) status.textContent = "";
+            }, 6000);
+          }
+          refreshGallery();
+          resolve();
+          return;
+        }
+        var item = entry.items[at++];
+        var record = byId.get(item.id);
+        if (!record) { missing++; return step(); }
+        var loaded;
+        try { loaded = loadObjectMeta(record); } catch (e) { failed++; return step(); }
+        patchObjectMetadata(record, loaded.fileKey, loaded.metaJson,
+          direction === "undo" ? item.before : item.after)
+          .then(function () { done++; step(); })
+          .catch(function () { failed++; step(); });
+      }
+      step();
+    });
+  }).catch(function (err) {
+    if (status) status.textContent = "Couldn't " + direction + ": " + friendlyError(err);
+  });
+}
+
+function doUndo() {
+  if (!undoStack.length) return;
+  var entry = undoStack.pop();
+  renderUndoUI();
+  return applyUndoEntry(entry, "undo").then(function () {
+    redoStack.push(entry);
+    if (redoStack.length > UNDO_MAX) redoStack.shift();
+    renderUndoUI();
+  });
+}
+function doRedo() {
+  if (!redoStack.length) return;
+  var entry = redoStack.pop();
+  renderUndoUI();
+  return applyUndoEntry(entry, "redo").then(function () {
+    undoStack.push(entry);
+    if (undoStack.length > UNDO_MAX) undoStack.shift();
+    renderUndoUI();
+  });
+}
+$("#btn-undo").addEventListener("click", doUndo);
+$("#btn-redo").addEventListener("click", doRedo);
+
 var draggingItemIds = null;
 // Remembered so the rail can be redrawn on a selection change without
 // re-reading the whole library just to learn the folder names again.
 var lastAllFolders = [];
+// Never persisted: every load starts hidden, deliberately.
+var foldersRevealed = false;
+// Set when a drag forced the rail open, so it can be put back afterwards.
+var railOpenedForDrag = false;
 
 /* Adds a folder to every given item, leaving any folders they already have
    in place. This is the one write path for filing, shared by the drag
@@ -4457,8 +4593,10 @@ function addItemsToFolder(ids, folderName) {
     if (res.error) throw res.error;
     var records = res.data || [];
     var at = 0, done = 0, failed = 0;
+    var changes = [];
     function step() {
       if (at >= records.length) {
+        pushUndo('add to "' + folderName + '"', changes);
         status.textContent = "Added " + done + ' to "' + folderName + '"' + (failed ? ", " + failed + " failed" : "") + ".";
         setTimeout(function () {
           if (status.textContent.indexOf("Added") === 0) status.textContent = "";
@@ -4470,8 +4608,13 @@ function addItemsToFolder(ids, folderName) {
       var loaded;
       try { loaded = loadObjectMeta(record); } catch (e) { failed++; at++; return step(); }
       if (itemInFolder(loaded.metaJson, folderName)) { done++; at++; return step(); } // already there
-      patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, foldersWith(loaded.metaJson, folderName))
-        .then(function () { done++; at++; step(); })
+      var beforeAdd = foldersPatch(itemFolders(loaded.metaJson));
+      var afterAdd = foldersWith(loaded.metaJson, folderName);
+      patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, afterAdd)
+        .then(function () {
+          changes.push({ id: record.id, before: beforeAdd, after: afterAdd });
+          done++; at++; step();
+        })
         .catch(function () { failed++; at++; step(); });
     }
     step();
@@ -4491,8 +4634,10 @@ function removeItemsFromFolder(ids, folderName) {
     if (res.error) throw res.error;
     var records = res.data || [];
     var at = 0, done = 0, failed = 0;
+    var changes = [];
     function step() {
       if (at >= records.length) {
+        pushUndo('remove from "' + folderName + '"', changes);
         status.textContent = "Removed " + done + ' from "' + folderName + '".';
         setTimeout(function () {
           if (status.textContent.indexOf("Removed") === 0) status.textContent = "";
@@ -4504,8 +4649,13 @@ function removeItemsFromFolder(ids, folderName) {
       var loaded;
       try { loaded = loadObjectMeta(record); } catch (e) { failed++; at++; return step(); }
       var remaining = itemFolders(loaded.metaJson).filter(function (f) { return f !== folderName; });
-      patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, foldersPatch(remaining))
-        .then(function () { done++; at++; step(); })
+      var beforeRemove = foldersPatch(itemFolders(loaded.metaJson));
+      var afterRemove = foldersPatch(remaining);
+      patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, afterRemove)
+        .then(function () {
+          changes.push({ id: record.id, before: beforeRemove, after: afterRemove });
+          done++; at++; step();
+        })
         .catch(function () { failed++; at++; step(); });
     }
     step();
@@ -4565,6 +4715,43 @@ function renderFolderRail(allFolders) {
       });
     }
     rail.appendChild(el);
+  }
+
+  /* Folder names stay hidden until asked for. A row of labels sitting
+     permanently across the top tells anyone glancing at the screen how the
+     library is organised, which is the one thing a private vault shouldn't
+     volunteer. Collapsed by default on every load rather than remembering
+     the last state -- a setting that stays open defeats the point. */
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "folder-chip folder-toggle";
+  toggle.textContent = (foldersRevealed ? "\u25be " : "\u25b8 ") + "Folders"
+    + (folders.length ? " (" + folders.length + ")" : "");
+  toggle.title = foldersRevealed ? "Hide folder names" : "Show folder names";
+  toggle.addEventListener("click", function () {
+    foldersRevealed = !foldersRevealed;
+    renderFolderRail(lastAllFolders);
+  });
+  rail.appendChild(toggle);
+
+  if (!foldersRevealed) {
+    // Filtering has to stay escapable while collapsed -- but the chip says
+    // "Filtered", not which folder, so the name still isn't on screen.
+    if (currentFolder) {
+      var clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "folder-chip active";
+      clear.textContent = "Filtered \u00d7";
+      clear.title = "Clear the folder filter";
+      clear.addEventListener("click", function () {
+        currentFolder = "";
+        var sel = $("#folder-select");
+        if (sel) sel.value = "";
+        refreshGallery();
+      });
+      rail.appendChild(clear);
+    }
+    return;
   }
 
   chip("All items", "");
@@ -5163,6 +5350,10 @@ var scrollDatePillHideTimer = null;
 var SCROLL_PILL_TOP_THRESHOLD = 90; // roughly where the fixed toolbar ends
 
 function updateScrollDatePill() {
+  // Disabled with the rest of the date display: a pill announcing the date
+  // of whatever you've scrolled to is the most visible date of the lot.
+  scrollDatePill.classList.remove("visible");
+  if (true) return;
   var boundaries = $$('.thumb[data-is-day-first="1"]');
   if (!boundaries.length) { scrollDatePill.classList.remove("visible"); return; }
   var current = null;
@@ -5473,8 +5664,9 @@ function renderTile(record, metaJson) {
 
   var info = document.createElement("div");
   info.className = "info-row";
+  // No dates on tiles, by request -- when a photo was taken is nobody's
+  // business at a glance. It's still editable in the viewer.
   var infoBits = [];
-  if (metaJson.date) infoBits.push(formatGroupHeader(metaJson.date));
   if (metaJson.size !== undefined && metaJson.size !== null) infoBits.push(formatSize(metaJson.size));
   if (metaJson.duration) infoBits.push(formatDuration(metaJson.duration));
   if (duplicateIds) {
@@ -5498,6 +5690,13 @@ function renderTile(record, metaJson) {
   tile.draggable = true;
   tile.addEventListener("dragstart", function (e) {
     draggingItemIds = selectedIds.has(record.id) ? Array.from(selectedIds) : [record.id];
+    // You can't drop onto targets you can't see, so a drag reveals the
+    // folders for its duration and hides them again when it ends.
+    if (!foldersRevealed) {
+      foldersRevealed = true;
+      railOpenedForDrag = true;
+      renderFolderRail(lastAllFolders);
+    }
     try {
       e.dataTransfer.setData("application/x-ghostdrive-items", draggingItemIds.join(","));
       e.dataTransfer.effectAllowed = "copy";
@@ -5506,6 +5705,11 @@ function renderTile(record, metaJson) {
   tile.addEventListener("dragend", function () {
     draggingItemIds = null;
     $$(".folder-chip").forEach(function (c) { c.classList.remove("drop-target"); });
+    if (railOpenedForDrag) {
+      railOpenedForDrag = false;
+      foldersRevealed = false;
+      renderFolderRail(lastAllFolders);
+    }
   });
 
   tile.addEventListener("click", function (e) {
@@ -5599,6 +5803,18 @@ document.addEventListener("keydown", function (e) {
   var tag = active ? active.tagName.toLowerCase() : "";
   var typing = tag === "input" || tag === "textarea" || tag === "select" || (active && active.isContentEditable);
 
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+    if (typing) return; // let the browser's own text undo work inside inputs
+    e.preventDefault();
+    if (e.shiftKey) doRedo(); else doUndo();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") {
+    if (typing) return;
+    e.preventDefault();
+    doRedo();
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
     if (typing) return; // let normal text select-all happen inside inputs
     e.preventDefault();
@@ -6274,6 +6490,82 @@ $("#btn-crop-rotate-cw").addEventListener("click", function () { rotateWithinCro
    video unplayable earlier. */
 var CANVAS_ENCODABLE_MIME = ["image/jpeg", "image/png", "image/webp"];
 
+/* ---------------- Animated GIF transforms ----------------
+   Canvas only ever holds ONE frame, so the old rotate/crop path -- draw the
+   <img> into a canvas, re-encode -- silently threw away every frame but the
+   one on screen and wrote back a still image. The file kept its .gif name
+   and the animation was simply gone.
+   Doing it properly means decoding each frame (ImageDecoder), applying the
+   same transform to all of them, and re-encoding a real animated GIF
+   (gifenc, imported on demand so a library nobody else needs isn't in the
+   boot path). Per-frame delays are carried across so the timing survives.
+   If either half is unavailable the transform REFUSES rather than
+   flattening: losing the animation quietly is worse than not rotating. */
+var GIFENC_URL = "https://cdn.jsdelivr.net/npm/gifenc@1.0.3/+esm";
+var gifencPromise = null;
+function loadGifEncoder() {
+  if (!gifencPromise) {
+    gifencPromise = import(GIFENC_URL).catch(function (err) {
+      gifencPromise = null; // let a later attempt retry
+      throw err;
+    });
+  }
+  return gifencPromise;
+}
+
+function isAnimatedGifItem(metaJson) {
+  var mime = ((metaJson && metaJson.mime) || "").toLowerCase();
+  var ext = ((metaJson && metaJson.ext) || "").toLowerCase();
+  return mime === "image/gif" || ext === "gif";
+}
+
+/* drawFrame(ctx, frame) applies whatever transform the caller wants to one
+   decoded frame; outW/outH are the resulting canvas size. Resolves to a
+   Blob, or null when this isn't actually a multi-frame GIF (one frame is
+   just a still, and the ordinary canvas path handles those better). */
+function transformAnimatedGif(sourceBytes, outW, outH, drawFrame) {
+  if (typeof ImageDecoder === "undefined") {
+    return Promise.reject(new Error("this browser can't decode GIF frames"));
+  }
+  return loadGifEncoder().then(function (gifenc) {
+    var decoder = new ImageDecoder({ data: sourceBytes, type: "image/gif" });
+    return decoder.tracks.ready.then(function () {
+      var track = decoder.tracks.selectedTrack;
+      var frameCount = track ? track.frameCount : 0;
+      if (!frameCount || frameCount < 2) return null; // a still -- not our job
+      var encoder = gifenc.GIFEncoder();
+      var canvas = document.createElement("canvas");
+      canvas.width = outW; canvas.height = outH;
+      var ctx = canvas.getContext("2d", { willReadFrequently: true });
+      var index = 0;
+      function nextFrame() {
+        if (index >= frameCount) {
+          encoder.finish();
+          return new Blob([encoder.bytes()], { type: "image/gif" });
+        }
+        return decoder.decode({ frameIndex: index++ }).then(function (result) {
+          var frame = result.image;
+          ctx.clearRect(0, 0, outW, outH);
+          ctx.save();
+          drawFrame(ctx, frame);
+          ctx.restore();
+          var pixels = ctx.getImageData(0, 0, outW, outH).data;
+          var palette = gifenc.quantize(pixels, 256);
+          var indexed = gifenc.applyPalette(pixels, palette);
+          // duration is microseconds; GIF delays are milliseconds, and a
+          // zero delay renders as "as fast as possible" in most viewers,
+          // so keep a sane floor.
+          var delay = Math.max(20, Math.round((frame.duration || 100000) / 1000));
+          encoder.writeFrame(indexed, outW, outH, { palette: palette, delay: delay });
+          try { frame.close(); } catch (e) {}
+          return nextFrame();
+        });
+      }
+      return nextFrame();
+    });
+  });
+}
+
 function rotateCurrentPhoto(direction) {
   var img = viewerState.imgEl;
   if (!img || !viewerState.id) return;
@@ -6298,7 +6590,26 @@ function rotateCurrentPhoto(direction) {
   var sourceMime = (viewerState.metaJson.mime || "").toLowerCase();
   var outMime = CANVAS_ENCODABLE_MIME.indexOf(sourceMime) !== -1 ? sourceMime : "image/jpeg";
 
-  new Promise(function (resolve) { canvas.toBlob(resolve, outMime, 0.92); })
+  /* An animated GIF can't go through the canvas path -- that keeps one
+     frame and discards the rest. Every frame gets rotated and re-encoded
+     instead; if that can't be done here, nothing is written at all. */
+  var encoded = isAnimatedGifItem(viewerState.metaJson)
+    ? fetch(viewerState.mediaUrl).then(function (r) { return r.arrayBuffer(); })
+        .then(function (buf) {
+          return transformAnimatedGif(new Uint8Array(buf), h, w, function (ctx, frame) {
+            if (direction === "cw") { ctx.translate(h, 0); ctx.rotate(Math.PI / 2); }
+            else { ctx.translate(0, w); ctx.rotate(-Math.PI / 2); }
+            ctx.drawImage(frame, 0, 0);
+          });
+        })
+        .then(function (gifBlob) {
+          if (gifBlob) { outMime = "image/gif"; return gifBlob; }
+          // Single-frame GIF: the plain canvas result is fine.
+          return new Promise(function (resolve) { canvas.toBlob(resolve, outMime, 0.92); });
+        })
+    : new Promise(function (resolve) { canvas.toBlob(resolve, outMime, 0.92); });
+
+  encoded
     .then(function (rotatedBlob) {
       if (!rotatedBlob) throw new Error("this browser couldn't re-encode the rotated image");
       if (viewerState.derivedFromRaw) {
@@ -6429,7 +6740,22 @@ $("#btn-crop-apply").addEventListener("click", function () {
   // the same way rotate already does.
   var cropSourceMime = (viewerState.metaJson.mime || "").toLowerCase();
   var cropOutMime = CANVAS_ENCODABLE_MIME.indexOf(cropSourceMime) !== -1 ? cropSourceMime : "image/jpeg";
-  new Promise(function (resolve) { canvas.toBlob(resolve, cropOutMime, 0.9); })
+  /* Same story as rotate: cropping an animated GIF through the canvas
+     would keep one frame and throw the animation away. Crop every frame. */
+  var cropEncoded = isAnimatedGifItem(viewerState.metaJson)
+    ? fetch(viewerState.mediaUrl).then(function (r) { return r.arrayBuffer(); })
+        .then(function (buf) {
+          return transformAnimatedGif(new Uint8Array(buf), sw, sh, function (ctx, frame) {
+            ctx.drawImage(frame, sx, sy, sw, sh, 0, 0, sw, sh);
+          });
+        })
+        .then(function (gifBlob) {
+          if (gifBlob) { cropOutMime = "image/gif"; return gifBlob; }
+          return new Promise(function (resolve) { canvas.toBlob(resolve, cropOutMime, 0.9); });
+        })
+    : new Promise(function (resolve) { canvas.toBlob(resolve, cropOutMime, 0.9); });
+
+  cropEncoded
     .then(function (croppedBlob) {
       if (!croppedBlob) throw new Error("this browser couldn't encode the cropped image");
       // What's on screen for a RAW is a preview extracted from the file,
@@ -6622,9 +6948,25 @@ $("#btn-viewer-save").addEventListener("click", function () {
     // so nothing later mistakes it for a filesystem-timestamp guess.
     dateSource: newDate ? "manual" : viewerState.metaJson.dateSource,
   }, folderPatch);
+  // Only the fields this form can change go into the undo entry -- a patch
+  // narrower than the whole blob means undoing a rename can't also revert
+  // something a crop or a face scan changed in the meantime.
+  var savedId = viewerState.id;
+  var beforeSave = {
+    name: viewerState.metaJson.name,
+    date: viewerState.metaJson.date,
+    dateSource: viewerState.metaJson.dateSource,
+    folders: itemFolders(viewerState.metaJson),
+    folder: itemFolders(viewerState.metaJson)[0] || "",
+  };
+  var afterSave = {
+    name: updated.name, date: updated.date, dateSource: updated.dateSource,
+    folders: updated.folders, folder: updated.folder,
+  };
   var encryptedMetadata = toB64(encryptBytes(viewerState.fileKey, new TextEncoder().encode(JSON.stringify(updated))));
-  sb.from("objects").update({ encrypted_metadata: encryptedMetadata }).eq("id", viewerState.id).then(function (res) {
+  sb.from("objects").update({ encrypted_metadata: encryptedMetadata }).eq("id", savedId).then(function (res) {
     if (res.error) { console.error(res.error); return; }
+    pushUndo("edit details", [{ id: savedId, before: beforeSave, after: afterSave }]);
     closeViewer();
     refreshGallery();
   });
@@ -7170,8 +7512,10 @@ function fileEncryptedIntoFolder() {
     if (!confirm(warning)) { status.textContent = ""; btn.disabled = false; return; }
 
     var at = 0, moved = 0, failed = 0;
+    var changes = [];
     function step() {
       if (at >= todo.length) {
+        pushUndo('file encrypted into "' + ENCRYPTED_FOLDER_NAME + '"', changes);
         status.textContent = 'Filed ' + moved + ' into "' + ENCRYPTED_FOLDER_NAME + '"'
           + (failed ? ", " + failed + " failed" : "") + ".";
         btn.disabled = false;
@@ -7180,9 +7524,13 @@ function fileEncryptedIntoFolder() {
       }
       var item = todo[at];
       status.textContent = "Filing… " + (at + 1) + " of " + todo.length;
-      patchObjectMetadata(item.record, item.loaded.fileKey, item.loaded.metaJson,
-        foldersWith(item.loaded.metaJson, ENCRYPTED_FOLDER_NAME))
-        .then(function () { moved++; at++; step(); })
+      var beforeFile = foldersPatch(itemFolders(item.loaded.metaJson));
+      var afterFile = foldersWith(item.loaded.metaJson, ENCRYPTED_FOLDER_NAME);
+      patchObjectMetadata(item.record, item.loaded.fileKey, item.loaded.metaJson, afterFile)
+        .then(function () {
+          changes.push({ id: item.record.id, before: beforeFile, after: afterFile });
+          moved++; at++; step();
+        })
         .catch(function () { failed++; at++; step(); });
     }
     step();
