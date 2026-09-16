@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-16a paste-to-upload";
+var GHOSTDRIVE_BUILD = "2026-09-16b paste-box-editable";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -407,8 +407,13 @@ checkForNewerBuild();
   .paste-box:focus-within { border-color: var(--accent, #6ea8fe); background: rgba(110,168,254,.06); }
   .paste-box.got { border-color: #4ade80; background: rgba(74,222,128,.08); }
   .paste-box .pi-input { flex: 1 1 auto; min-width: 0; background: transparent; border: 0; outline: none;
-    color: var(--text, #e6e6e6); font-size: 14px; font-family: inherit; padding: 2px 0; }
-  .paste-box .pi-input::placeholder { color: var(--text-dim); opacity: .8; }
+    color: var(--text, #e6e6e6); font-size: 14px; font-family: inherit; padding: 2px 0;
+    min-height: 20px; line-height: 20px; white-space: nowrap; overflow: hidden; }
+  /* contenteditable has no placeholder attribute -- this is the stand-in. */
+  .paste-box .pi-input:empty::before { content: attr(data-placeholder);
+    color: var(--text-dim); opacity: .8; pointer-events: none; }
+  /* A pasted image would otherwise render full size inside the strip. */
+  .paste-box .pi-input img { max-height: 22px; width: auto; vertical-align: middle; }
   .paste-box .pi-status { font-size: 12px; color: var(--text-dim); white-space: nowrap; font-family: var(--mono); }
   .paste-box .pi-thumbs { display: flex; gap: 6px; }
   .paste-box .pi-thumbs img { width: 30px; height: 30px; object-fit: cover; border-radius: 5px;
@@ -1032,9 +1037,15 @@ checkForNewerBuild();
            Ctrl/Cmd-V lands here; a paste anywhere else in the vault is caught
            by the window-level handler below and behaves identically. -->
       <div id="paste-box" class="paste-box">
-        <input type="text" id="paste-input" class="pi-input" readonly
-               placeholder="Paste an image here  (Ctrl+V / Cmd+V)"
-               aria-label="Paste an image to upload">
+        <!-- A real editable field, not a readonly input: Safari and Firefox
+             refuse to fire a paste event on a readonly input at all, which
+             is why the first version quietly did nothing there. The image
+             goes straight from the clipboard into the upload -- it is never
+             written to Photos or Documents on the way. -->
+        <div id="paste-input" class="pi-input" contenteditable="true" role="textbox"
+             spellcheck="false"
+             data-placeholder="Paste a photo here  (Ctrl+V / Cmd+V)"
+             aria-label="Paste a photo to upload"></div>
         <span id="paste-thumbs" class="pi-thumbs"></span>
         <span id="paste-status" class="pi-status"></span>
       </div>
@@ -1847,7 +1858,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-16a paste-to-upload";
+var GHOSTDRIVE_BUILD = "2026-09-16b paste-box-editable";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -2427,6 +2438,11 @@ function handlePaste(e) {
   });
   showPasteFeedback(named);
   processFiles(named);
+  /* preventDefault above stops most browsers inserting the image into the
+     box, but not every one of them -- clear on the next tick so the field
+     never keeps what was pasted. */
+  var pasteField = $("#paste-input");
+  if (pasteField) setTimeout(function () { pasteField.innerHTML = ""; }, 0);
 }
 var pasteBoxBound = false;
 function bindPasteBox() {
@@ -2436,17 +2452,30 @@ function bindPasteBox() {
   pasteBoxBound = true;
   var box = $("#paste-box"), input = $("#paste-input");
   if (box && input) {
-    // Clicking the strip should feel like clicking into a text field.
+    // Clicking anywhere in the strip should feel like clicking into a field.
     box.addEventListener("click", function () { input.focus(); });
     input.addEventListener("paste", handlePaste);
+    /* The box is editable so the browser will actually fire paste -- but it
+       should never hold content. Anything that lands in it (the image
+       itself, or stray text) is cleared straight back out, so it always
+       reads as an empty prompt instead of filling up with what you pasted. */
+    input.addEventListener("input", function () {
+      if (input.innerHTML !== "") input.innerHTML = "";
+    });
+    // Enter would otherwise insert a line break into an editable div.
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") e.preventDefault();
+    });
   }
-  // A paste anywhere in the vault works too -- except while typing in the
-  // search box or another real field, where the keystroke belongs to them.
+  /* A paste anywhere else in the vault works too -- except while typing in
+     the search box or another real field, where the paste belongs to them. */
   window.addEventListener("paste", function (e) {
     var t = e.target;
-    if (t && t !== input && (t.isContentEditable
-        || t.tagName === "TEXTAREA"
-        || (t.tagName === "INPUT" && t.readOnly !== true))) return;
+    if (t && t !== input) {
+      if (t.isContentEditable) return;
+      if (t.tagName === "TEXTAREA") return;
+      if (t.tagName === "INPUT" && !t.readOnly && !t.disabled) return;
+    }
     handlePaste(e);
   });
 }
