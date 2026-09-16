@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-16f rotate-video-and-selfheal";
+var GHOSTDRIVE_BUILD = "2026-09-16g tag-null-upload-rejections";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -1901,7 +1901,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-16f rotate-video-and-selfheal";
+var GHOSTDRIVE_BUILD = "2026-09-16g tag-null-upload-rejections";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -4179,22 +4179,36 @@ function runQueuedUpload(entry, onProgress, signal) {
 // from a closed tab -- either way it's the same entry shape, so the same
 // function drives both paths (except a "prepared-large" entry, which
 // can only ever be the just-picked path -- see prepareUpload above).
+// A rejection that carries no error object at all (null/undefined) has come
+// up in the field with nothing else to go on -- not which network call
+// failed, not why. Most likely cause: something in the chain (R2, or the
+// Supabase client) settling with a falsy non-Error value instead of
+// actually throwing. Tagging WHICH of the three stages was in flight when
+// that happens turns "no error object" into an actual lead next time, since
+// guessing blind at this one has already burned two rounds of "fixes" that
+// verified live but didn't stop the reports.
+function taggedStage(stageName, promise) {
+  return promise.catch(function (err) {
+    if (err !== null && err !== undefined) throw err; // a real error -- nothing to add
+    throw new Error("Upload failed during " + stageName + " with no underlying error (network interrupted, or the request never actually completed).");
+  });
+}
 function uploadQueueEntry(entry, onProgress, signal) {
-  var contentUpload = entry.stage === "prepared-large"
+  var contentUpload = taggedStage("content transfer", entry.stage === "prepared-large"
     ? (entry.plaintextContent
         ? r2UploadFileRaw(entry.contentPath, entry.file, onProgress, signal)
         : r2UploadFileEncrypted(entry.contentPath, entry.file, entry.fileKey, onProgress, signal))
     : entry.contentBlob.arrayBuffer().then(function (buf) { return r2PutSmall(entry.contentPath, new Uint8Array(buf), signal); })
-        .then(function () { if (onProgress) onProgress(entry.contentBlob.size, entry.contentBlob.size); });
+        .then(function () { if (onProgress) onProgress(entry.contentBlob.size, entry.contentBlob.size); }));
 
   return contentUpload
     .then(function () {
-      return (entry.thumbPath && entry.thumbBlob)
+      return taggedStage("thumbnail transfer", Promise.resolve((entry.thumbPath && entry.thumbBlob)
         ? entry.thumbBlob.arrayBuffer().then(function (buf) { return r2PutSmall(entry.thumbPath, new Uint8Array(buf), signal); })
-        : null;
+        : null));
     })
     .then(function () {
-      return sb.from("objects").insert(entry.dbPayload);
+      return taggedStage("database insert", Promise.resolve(sb.from("objects").insert(entry.dbPayload)));
     })
     .then(function (res) {
       // A 23505 (unique_violation) on objects_pkey means this exact row is
