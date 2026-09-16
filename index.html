@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-16g tag-null-upload-rejections";
+var GHOSTDRIVE_BUILD = "2026-09-16h remove-file-encrypted add-download-all";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -977,12 +977,12 @@ try {
           <button type="button" id="btn-open-reels-video" class="secondary">&#9654; Shuffle: videos only</button>
           <button type="button" id="btn-open-people" class="secondary">People</button>
           <button type="button" id="btn-rebuild-thumbs" class="secondary">Rebuild broken previews</button>
-          <button type="button" id="btn-file-encrypted" class="secondary">File encrypted into a folder</button>
           <button type="button" id="btn-find-duplicates" class="secondary">Find duplicates</button>
           <button type="button" id="btn-select-dupe-extras" class="secondary hidden">Select extra copies</button>
+          <button type="button" id="btn-download-all" class="secondary">Download all (.zip)</button>
           <span id="find-duplicates-status" class="hint"></span>
           <span id="rebuild-thumbs-status" class="hint"></span>
-          <span id="file-encrypted-status" class="hint"></span>
+          <span id="download-all-status" class="hint"></span>
           <button id="btn-lock">Sign out</button>
         </div>
       </header>
@@ -1901,7 +1901,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-16g tag-null-upload-rejections";
+var GHOSTDRIVE_BUILD = "2026-09-16h remove-file-encrypted add-download-all";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -8332,70 +8332,161 @@ function rebuildMissingThumbnails() {
 }
 $("#btn-rebuild-thumbs").addEventListener("click", rebuildMissingThumbnails);
 
-/* Gathers every legacy encrypted-content item into one folder so they can
-   be reviewed and cleared out as a group instead of hunted for one at a
-   time. A folder here is just a name stored in an item's own metadata, so
-   this rewrites that one field and touches nothing else -- no bytes move,
-   nothing is deleted, and putting them back is only ever another move. */
-var ENCRYPTED_FOLDER_NAME = "Encrypted (legacy)";
-
-function fileEncryptedIntoFolder() {
-  var btn = $("#btn-file-encrypted");
-  var status = $("#file-encrypted-status");
+/* ---------------- Download all (.zip) ----------------
+   Everything in the library (respecting the private-folder lock, same as
+   every other bulk pass -- see withoutPrivateRows), packaged as one .zip,
+   organized into the same folders shown in the app. Two things make this
+   safe for a library with a lot of video in it rather than just a
+   convenience for a small one:
+   1. Only ONE item's bytes are ever in memory at a time -- items are
+      downloaded and written into the zip strictly one after another, never
+      buffered as a batch, so this doesn't scale with library size the way
+      building one giant Blob up front would.
+   2. Where the browser supports it (Chrome/Edge), the zip is streamed
+      straight to a file on disk via the File System Access API as it's
+      built, so the *zip itself* never sits fully in memory either. Safari
+      and Firefox don't have that API, so there it still has to fall back
+      to assembling the finished zip as one in-memory Blob before handing
+      it to a normal download link -- the per-item streaming above is what
+      that fallback still gets right, at least.
+   Compression is deliberately skipped (ZipPassThrough = "store" only):
+   photos and videos are already-compressed formats, so re-compressing them
+   would just burn CPU for a few bytes back. */
+function sanitizeZipComponent(name) {
+  // Built as a numeric comparison rather than a \u0000-\u001f regex range --
+  // a raw control character sitting in a <script> tag's source gets replaced
+  // by the HTML parser (U+FFFD) before the regex engine ever sees it, which
+  // silently turned this into an out-of-order character class once before.
+  var s = (name || "").toString();
+  var bad = "/\\:*?\"<>|";
+  var out = "";
+  for (var i = 0; i < s.length; i++) {
+    var ch = s.charAt(i);
+    out += (s.charCodeAt(i) < 0x20 || bad.indexOf(ch) !== -1) ? "_" : ch;
+  }
+  s = out.trim();
+  if (s === "." || s === "..") s = "_";
+  return s || "untitled";
+}
+function zipFolderPathFor(metaJson) {
+  var folders = itemFolders(metaJson);
+  if (!folders.length) return "";
+  var first = folders[0] === PRIVATE_FOLDER ? "Private" : folders[0];
+  return sanitizeZipComponent(first);
+}
+function downloadAllAsZip() {
+  var btn = $("#btn-download-all");
+  var status = $("#download-all-status");
+  if (btn.disabled) return; // already running
   btn.disabled = true;
-  status.textContent = "Looking for encrypted items…";
-  return fetchAllObjects().then(function (allRows) {
-    var res = { data: withoutPrivateRows(allRows) };
-    var todo = [];
+  status.textContent = "Looking at your library…";
+
+  var useFSA = typeof window.showSaveFilePicker === "function";
+
+  fetchAllObjects().then(function (allRows) {
+    var rows = withoutPrivateRows(allRows);
+    var items = [];
     var unreadable = 0;
-    (res.data || []).forEach(function (record) {
+    rows.forEach(function (record) {
       var loaded;
-      // Something whose metadata won't decrypt can't be classified either
-      // way, so it is counted and left alone rather than guessed at.
       try { loaded = loadObjectMeta(record); } catch (e) { unreadable++; return; }
-      if (!itemIsEncrypted(loaded.metaJson)) return;
-      if (itemInFolder(loaded.metaJson, ENCRYPTED_FOLDER_NAME)) return; // already filed
-      todo.push({ record: record, loaded: loaded });
+      items.push({ record: record, loaded: loaded });
     });
-    if (!todo.length) {
-      status.textContent = "Nothing to file" + (unreadable ? " (" + unreadable + " unreadable)" : "") + ".";
+    if (!items.length) {
+      status.textContent = "Nothing to download" + (unreadable ? " (" + unreadable + " item(s) unreadable)" : "") + ".";
       btn.disabled = false;
       return;
     }
-    var warning = "Add " + todo.length + " encrypted item" + (todo.length === 1 ? "" : "s")
-      + ' to the folder "' + ENCRYPTED_FOLDER_NAME + '"?\n\n'
-      + "Nothing is deleted or moved — an item can be in several folders, so anything already filed somewhere stays there too.";
+    var totalBytes = items.reduce(function (n, it) { return n + (it.loaded.metaJson.size || 0); }, 0);
+    var warning = "Download all " + items.length + " item" + (items.length === 1 ? "" : "s")
+      + " (about " + formatSize(totalBytes) + ") as one .zip, organized by folder?\n\n"
+      + "Everything gets downloaded and re-packaged, so this can take a while for a large library.";
     if (!confirm(warning)) { status.textContent = ""; btn.disabled = false; return; }
 
-    var at = 0, moved = 0, failed = 0;
-    var changes = [];
-    function step() {
-      if (at >= todo.length) {
-        pushUndo('file encrypted into "' + ENCRYPTED_FOLDER_NAME + '"', changes);
-        status.textContent = 'Filed ' + moved + ' into "' + ENCRYPTED_FOLDER_NAME + '"'
-          + (failed ? ", " + failed + " failed" : "") + ".";
-        btn.disabled = false;
-        refreshGallery();
-        return;
+    // Every item's path inside the zip, de-duplicated within its own folder
+    // (two items can share a name if they're not actually the same file).
+    var usedNames = {};
+    items.forEach(function (it) {
+      var folderPath = zipFolderPathFor(it.loaded.metaJson);
+      var baseName = sanitizeZipComponent(it.loaded.metaJson.name || ("file." + (it.loaded.metaJson.ext || "bin")));
+      if (!usedNames[folderPath]) usedNames[folderPath] = new Set();
+      var finalName = baseName, n = 2;
+      while (usedNames[folderPath].has(finalName)) {
+        var dot = baseName.lastIndexOf(".");
+        finalName = dot > 0 ? baseName.slice(0, dot) + " (" + n + ")" + baseName.slice(dot) : baseName + " (" + n + ")";
+        n++;
       }
-      var item = todo[at];
-      status.textContent = "Filing… " + (at + 1) + " of " + todo.length;
-      var beforeFile = foldersPatch(itemFolders(item.loaded.metaJson));
-      var afterFile = foldersWith(item.loaded.metaJson, ENCRYPTED_FOLDER_NAME);
-      patchObjectMetadata(item.record, item.loaded.fileKey, item.loaded.metaJson, afterFile)
-        .then(function () {
-          changes.push({ id: item.record.id, before: beforeFile, after: afterFile });
-          moved++; at++; step();
-        })
-        .catch(function () { failed++; at++; step(); });
-    }
-    step();
+      usedNames[folderPath].add(finalName);
+      it.zipPath = folderPath ? folderPath + "/" + finalName : finalName;
+    });
+
+    var zipName = "ghostdrive-export-" + new Date().toISOString().slice(0, 10) + ".zip";
+    return (useFSA
+      ? window.showSaveFilePicker({ suggestedName: zipName, types: [{ description: "Zip archive", accept: { "application/zip": [".zip"] } }] })
+      : Promise.resolve(null)
+    ).then(function (handle) {
+      return Promise.resolve(handle ? handle.createWritable() : null).then(function (writable) {
+        var chunks = writable ? null : [];
+        var pendingWrite = Promise.resolve();
+        var failErr = null;
+        var zip = new fflate.Zip(function (err, dat) {
+          if (err) { failErr = err; return; }
+          pendingWrite = pendingWrite.then(function () { return writable ? writable.write(dat) : chunks.push(dat); });
+        });
+
+        var done = 0, failed = 0;
+        function processOne(it) {
+          status.textContent = "Downloading " + (done + failed + 1) + " of " + items.length + " — " + it.zipPath;
+          return downloadObjectContent(it.record, it.loaded.fileKey, it.loaded.metaJson, function (loaded, total) {
+            if (total) status.textContent = "Downloading " + (done + failed + 1) + " of " + items.length
+              + " — " + it.zipPath + " (" + Math.round((loaded / total) * 100) + "%)";
+          }).then(function (blob) { return blob.arrayBuffer(); })
+            .then(function (buf) {
+              var entry = new fflate.ZipPassThrough(it.zipPath);
+              zip.add(entry);
+              entry.push(new Uint8Array(buf), true);
+              return pendingWrite; // this file's bytes are flushed before the next download starts
+            })
+            .then(function () { done++; })
+            .catch(function (err) {
+              console.error("[ghostdrive] download-all: skipped", it.zipPath, err);
+              failed++;
+            });
+        }
+        var at = 0;
+        function next() {
+          if (failErr) return Promise.reject(failErr);
+          if (at >= items.length) return Promise.resolve();
+          return processOne(items[at++]).then(next);
+        }
+
+        return next().then(function () {
+          zip.end();
+          return pendingWrite;
+        }).then(function () {
+          if (writable) return writable.close();
+          var blob = new Blob(chunks, { type: "application/zip" });
+          var a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = zipName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
+        }).then(function () {
+          status.textContent = "Downloaded " + done + " of " + items.length + " item" + (items.length === 1 ? "" : "s")
+            + (failed ? ", " + failed + " failed (see console)" : "") + ".";
+        });
+      });
+    });
   }).catch(function (err) {
-    status.textContent = "Couldn't file them: " + friendlyError(err);
+    if (err && err.name === "AbortError") { status.textContent = ""; return; } // save dialog cancelled
+    status.textContent = "Couldn't download: " + friendlyError(err);
+  }).then(function () {
     btn.disabled = false;
   });
 }
-$("#btn-file-encrypted").addEventListener("click", fileEncryptedIntoFolder);
+$("#btn-download-all").addEventListener("click", downloadAllAsZip);
 
 $("#btn-open-people").addEventListener("click", function () {
   renderPeopleList();
