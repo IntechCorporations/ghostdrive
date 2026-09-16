@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-15j private-folder";
+var GHOSTDRIVE_BUILD = "2026-09-16a paste-to-upload";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -399,6 +399,20 @@ checkForNewerBuild();
   .idle-warning.hidden { display: none; }
   .idle-warning button { padding: 6px 12px; font-size: 12.5px; }
   @media (max-width: 640px) { .idle-warning { margin: 0 16px 10px; } }
+
+  /* ---- Paste box ---- */
+  .paste-box { margin: 0 28px 14px; display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; border-radius: 10px; border: 1px dashed var(--border, #33383f);
+    background: rgba(255,255,255,.02); cursor: text; transition: border-color .15s, background .15s; }
+  .paste-box:focus-within { border-color: var(--accent, #6ea8fe); background: rgba(110,168,254,.06); }
+  .paste-box.got { border-color: #4ade80; background: rgba(74,222,128,.08); }
+  .paste-box .pi-input { flex: 1 1 auto; min-width: 0; background: transparent; border: 0; outline: none;
+    color: var(--text, #e6e6e6); font-size: 14px; font-family: inherit; padding: 2px 0; }
+  .paste-box .pi-input::placeholder { color: var(--text-dim); opacity: .8; }
+  .paste-box .pi-status { font-size: 12px; color: var(--text-dim); white-space: nowrap; font-family: var(--mono); }
+  .paste-box .pi-thumbs { display: flex; gap: 6px; }
+  .paste-box .pi-thumbs img { width: 30px; height: 30px; object-fit: cover; border-radius: 5px;
+    border: 1px solid var(--border, #33383f); }
 
   /* ---- Private folder ---- */
   .vault-footer { display: flex; align-items: center; justify-content: center; gap: 10px;
@@ -1012,6 +1026,17 @@ checkForNewerBuild();
       <div id="idle-warning" class="idle-warning hidden">
         <span>Signing you out shortly — no activity for a while.</span>
         <button type="button" id="btn-idle-stay">Stay signed in</button>
+      </div>
+
+      <!-- Paste target. Clicking anywhere in the strip focuses the input, so
+           Ctrl/Cmd-V lands here; a paste anywhere else in the vault is caught
+           by the window-level handler below and behaves identically. -->
+      <div id="paste-box" class="paste-box">
+        <input type="text" id="paste-input" class="pi-input" readonly
+               placeholder="Paste an image here  (Ctrl+V / Cmd+V)"
+               aria-label="Paste an image to upload">
+        <span id="paste-thumbs" class="pi-thumbs"></span>
+        <span id="paste-status" class="pi-status"></span>
       </div>
 
       <div id="private-bar" class="private-bar hidden">
@@ -1822,7 +1847,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-15j private-folder";
+var GHOSTDRIVE_BUILD = "2026-09-16a paste-to-upload";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -1868,6 +1893,7 @@ function enterVault() {
   saveDeviceKey();
   showScreen("#screen-vault");
   bindPrivateControls();
+  bindPasteBox();
   // Armed here as well as on activity: signing in and immediately walking
   // away is exactly the case this exists for, and that produces no events.
   armIdleSignOut();
@@ -2333,6 +2359,98 @@ function boot() {
 
 /* ---------------- Upload (file picker + drag-and-drop) ---------------- */
 $("#btn-choose-files").addEventListener("click", function () { $("#file-input").click(); });
+/* ---------------- Paste-to-upload ----------------
+   A screenshot on the clipboard has no filename -- the browser hands it
+   over as "image.png" every single time, so ten pasted screenshots would
+   all arrive under one name. Each paste gets a timestamped name instead so
+   they stay tellable apart in the library.
+
+   Both a real paste of image DATA and a paste of a COPIED FILE are handled:
+   the first arrives as an item with kind "file" and an image type, the
+   second as entries in clipboardData.files. Text on the clipboard is
+   ignored rather than treated as an empty upload. */
+function pastedImageName(file, seq) {
+  var d = new Date();
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  var ext = (file.type && file.type.indexOf("/") !== -1) ? file.type.split("/")[1] : "png";
+  if (ext === "jpeg") ext = "jpg";
+  return "Pasted " + d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate())
+       + " " + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds())
+       + (seq ? "-" + (seq + 1) : "") + "." + ext;
+}
+function filesFromClipboard(dt) {
+  if (!dt) return [];
+  var out = [];
+  var items = dt.items || [];
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].kind === "file") {
+      var f = items[i].getAsFile();
+      if (f && /^image\//.test(f.type || "")) out.push(f);
+    }
+  }
+  // Some browsers expose a copied file only here, not in .items.
+  if (!out.length && dt.files && dt.files.length) {
+    for (var j = 0; j < dt.files.length; j++) {
+      var g = dt.files[j];
+      if (g && /^image\//.test(g.type || "")) out.push(g);
+    }
+  }
+  return out;
+}
+function showPasteFeedback(files) {
+  var box = $("#paste-box"), thumbs = $("#paste-thumbs"), status = $("#paste-status");
+  if (box) { box.classList.add("got"); setTimeout(function () { box.classList.remove("got"); }, 1200); }
+  if (status) {
+    status.textContent = files.length === 1 ? "1 image added" : files.length + " images added";
+    setTimeout(function () { if (status) status.textContent = ""; }, 4000);
+  }
+  if (!thumbs) return;
+  thumbs.innerHTML = "";
+  files.slice(0, 4).forEach(function (f) {
+    var url = URL.createObjectURL(f);
+    var img = document.createElement("img");
+    img.src = url;
+    // The object URL is only needed until the browser has decoded it.
+    img.addEventListener("load", function () { URL.revokeObjectURL(url); });
+    thumbs.appendChild(img);
+  });
+  setTimeout(function () { if (thumbs) thumbs.innerHTML = ""; }, 6000);
+}
+function handlePaste(e) {
+  var raw = filesFromClipboard(e.clipboardData || window.clipboardData);
+  if (!raw.length) return;              // plain text -- leave it alone
+  e.preventDefault();
+  var named = raw.map(function (f, i) {
+    // A File's name is read-only, so a rename means re-wrapping the bytes.
+    try { return new File([f], pastedImageName(f, raw.length > 1 ? i : 0), { type: f.type }); }
+    catch (err) { return f; }           // very old browsers: keep the original
+  });
+  showPasteFeedback(named);
+  processFiles(named);
+}
+var pasteBoxBound = false;
+function bindPasteBox() {
+  // enterVault can run more than once; the window-level listener would
+  // otherwise stack and upload the same paste several times over.
+  if (pasteBoxBound) return;
+  pasteBoxBound = true;
+  var box = $("#paste-box"), input = $("#paste-input");
+  if (box && input) {
+    // Clicking the strip should feel like clicking into a text field.
+    box.addEventListener("click", function () { input.focus(); });
+    input.addEventListener("paste", handlePaste);
+  }
+  // A paste anywhere in the vault works too -- except while typing in the
+  // search box or another real field, where the keystroke belongs to them.
+  window.addEventListener("paste", function (e) {
+    var t = e.target;
+    if (t && t !== input && (t.isContentEditable
+        || t.tagName === "TEXTAREA"
+        || (t.tagName === "INPUT" && t.readOnly !== true))) return;
+    handlePaste(e);
+  });
+}
+
 $("#file-input").addEventListener("change", function (e) {
   var files = Array.prototype.slice.call(e.target.files || []);
   e.target.value = "";
