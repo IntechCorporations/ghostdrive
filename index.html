@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-16d shift-select-checkbox-fix";
+var GHOSTDRIVE_BUILD = "2026-09-16e paste-classify-fix";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -1761,7 +1761,24 @@ function showScreen(id) { $$(".screen").forEach(function (s) { s.classList.add("
 function showModal(id) { $(id).classList.remove("hidden"); }
 function hideModal(id) { $(id).classList.add("hidden"); }
 function friendlyError(err) {
+  /* err ending up null/undefined here has happened before -- some promise
+     in the chain rejected (or an .onerror fired) without a real Error
+     object behind it -- and the old code turned that into the literal
+     string "null" or "undefined" on screen, which tells a person nothing
+     about what actually went wrong. This still shows SOMETHING useful:
+     the error is logged in full to the console (where the real shape of
+     whatever was thrown is still visible for debugging) and the screen
+     gets a message that says a cause couldn't be determined, rather than
+     a bare, meaningless "null". */
+  if (err === null || err === undefined) {
+    console.error("[ghostdrive] rejected with no error object:", err);
+    return "Something went wrong, but no error detail was given. Check the browser console, or try again.";
+  }
   var msg = (err && err.message) || String(err);
+  if (!msg || msg === "null" || msg === "undefined" || msg === "[object Object]") {
+    console.error("[ghostdrive] error with no usable message:", err);
+    return "Something went wrong, but no error detail was given. Check the browser console, or try again.";
+  }
   return msg.length > 300 ? msg.slice(0, 300) + "…" : msg;
 }
 
@@ -1858,7 +1875,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-16d shift-select-checkbox-fix";
+var GHOSTDRIVE_BUILD = "2026-09-16e paste-classify-fix";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -3242,6 +3259,17 @@ var RAW_EXTENSIONS = ["cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf", "p
 // Safari included -- this list is what undoes that.
 var IMG_UNDECODABLE_EXTENSIONS = ["cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf", "pef", "srw"];
 var VIDEO_EXTENSIONS = ["mov", "avi", "mkv", "mp4", "m4v", "3gp", "webm"];
+// Ordinary, browser-native image formats. RAW_EXTENSIONS covers the ones a
+// browser CAN'T decode on its own; this covers the ones that need no help
+// at all -- but still need to be named here, because classifyFile falls
+// back to extension only when file.type is empty, which is common for a
+// pasted-from-clipboard image (several browsers hand getAsFile() a File
+// with type "" for a clipboard image, especially through the dt.files
+// fallback path). Without this list, a pasted PNG with no MIME type fell
+// through every check and landed as kind "other" -- invisible to the
+// Photos filter, the video/photo feed, and the type dropdown; not a
+// creative use of "other", just silently miscategorized.
+var IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico", "tif", "tiff"];
 function fileExt(name) {
   var m = /\.([a-z0-9]+)$/i.exec(name || "");
   return m ? m[1].toLowerCase() : "";
@@ -3251,6 +3279,7 @@ function classifyFile(file) {
   if (file.type.indexOf("image/") === 0) return "photo";
   var ext = fileExt(file.name);
   if (RAW_EXTENSIONS.indexOf(ext) !== -1) return "photo";
+  if (IMAGE_EXTENSIONS.indexOf(ext) !== -1) return "photo";
   if (VIDEO_EXTENSIONS.indexOf(ext) !== -1) return "video";
   return "other";
 }
