@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-16b paste-box-editable";
+var GHOSTDRIVE_BUILD = "2026-09-16c rebuild-previews-fix";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -1858,7 +1858,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-16b paste-box-editable";
+var GHOSTDRIVE_BUILD = "2026-09-16c rebuild-previews-fix";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -8058,18 +8058,56 @@ function rebuildMissingThumbnails() {
     var todo = [];
     var checked = 0;
 
+    /* Two bugs lived in this screening pass, and between them they are why
+       a rebuild kept finishing with previews still broken.
+
+       1. It recursed synchronously. Every row without a thumbnail_path
+          called screen() again from inside screen(), so a long run of them
+          -- which is exactly what a library full of missing previews looks
+          like -- grew the call stack until the browser threw
+          RangeError: Maximum call stack size exceeded. The outer .catch
+          turned that into a generic error and the pass stopped partway
+          through, having rebuilt only what it reached first.
+
+       2. A thumbnail that FAILED to load was skipped instead of queued.
+          The .catch incremented past it without pushing to todo -- but a
+          preview that errors on load is precisely one that needs
+          rebuilding, so the pass was stepping over its best candidates.
+
+       The loop below is iterative for the synchronous cases (no stack
+       growth at all) and treats any load or decode failure as "needs
+       rebuilding" rather than "nothing to see here". */
     function screen() {
+      // Drain every row that can be judged without waiting on I/O first.
+      while (checked < all.length) {
+        var record = all[checked];
+        if (record.thumbnail_path) break;
+        todo.push(record);
+        checked++;
+      }
       if (checked >= all.length) return run();
-      var record = all[checked];
+
+      var current = all[checked];
       status.textContent = "Checking previews… " + (checked + 1) + " of " + all.length;
-      if (!record.thumbnail_path) { todo.push(record); checked++; return screen(); }
-      loadThumbnail(record).then(function (url) {
-        if (!url) { todo.push(record); checked++; return screen(); }
+
+      var advance = function (needsRebuild) {
+        if (needsRebuild) todo.push(current);
+        checked++;
+        screen();
+      };
+
+      loadThumbnail(current).then(function (url) {
+        if (!url) return advance(true);
         return thumbnailLooksBlack(url).then(function (isBlack) {
-          if (isBlack) todo.push(record);
-          checked++; screen();
+          advance(!!isBlack);
+        }, function () {
+          // Couldn't even decode it to check -- rebuild it.
+          advance(true);
         });
-      }).catch(function () { checked++; screen(); });
+      }).catch(function () {
+        // The stored thumbnail wouldn't load. That is a broken preview.
+        advance(true);
+      });
     }
 
     function run() {
@@ -8088,14 +8126,25 @@ function rebuildMissingThumbnails() {
         refreshGallery();
       }
       function step() {
+        /* Same synchronous-recursion trap as the screening pass above: an
+           undecryptable row or an oversized one called step() from inside
+           step(), so a run of them grew the stack until it overflowed and
+           the rebuild stopped early. Drain those cases in a loop instead. */
+        while (at < todo.length) {
+          var candidate = todo[at];
+          var probe;
+          try { probe = loadObjectMeta(candidate); }
+          catch (e) { failed++; at++; continue; }
+          if ((probe.metaJson.size || 0) > REBUILD_THUMB_MAX_BYTES) { skipped++; at++; continue; }
+          break;
+        }
         if (at >= todo.length) return finish();
+
         var record = todo[at];
         status.textContent = "Rebuilding… " + (at + 1) + " of " + todo.length;
         var loaded;
-        // One undecryptable row must not take the whole pass down with it.
         try { loaded = loadObjectMeta(record); }
         catch (e) { failed++; at++; return step(); }
-        if ((loaded.metaJson.size || 0) > REBUILD_THUMB_MAX_BYTES) { skipped++; at++; return step(); }
         downloadObjectContent(record, loaded.fileKey, loaded.metaJson).then(function (blob) {
           // makeThumbnail branches on the filename for its HEIC fallback, so
           // the blob has to carry the original name, not an anonymous one.
