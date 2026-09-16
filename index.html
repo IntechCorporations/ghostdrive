@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-16c rebuild-previews-fix";
+var GHOSTDRIVE_BUILD = "2026-09-16d shift-select-checkbox-fix";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -1858,7 +1858,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-16c rebuild-previews-fix";
+var GHOSTDRIVE_BUILD = "2026-09-16d shift-select-checkbox-fix";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -6225,7 +6225,14 @@ function renderTile(record, metaJson) {
   check.className = "select-check";
   check.title = "Select";
   check.addEventListener("click", function (e) {
+    /* This checkbox is the obvious, hover-revealed way to select a tile,
+       so it needs to honor the same modifiers the tile body does. Before
+       this it only ever toggled the single tile -- Shift+click here (as
+       opposed to on the photo/thumbnail itself) silently did a plain
+       toggle, which is what "shift-click to select a range doesn't work"
+       actually was: people click the checkbox, not the image. */
     e.stopPropagation();
+    if (e.shiftKey) { rangeSelect(record.id); return; }
     toggleSelect(record.id);
   });
   tile.appendChild(check);
