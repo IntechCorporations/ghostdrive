@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-16e paste-classify-fix";
+var GHOSTDRIVE_BUILD = "2026-09-16f rotate-video-and-selfheal";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -74,6 +74,29 @@ function checkForNewerBuild() {
   } catch (e) {}
 }
 checkForNewerBuild();
+/* The fetch above only ever runs once, at the moment this script parses.
+   A tab that's been open since before the last deploy -- which is exactly
+   what happens when someone keeps working in the same tab across several
+   rounds of fixes -- never runs it again, so it can sit on an old build
+   indefinitely even though the server has moved on. That produced its own
+   long debugging detour: fixes were verified live and reported back, but
+   the person retesting in their still-open tab was running code from
+   before those fixes existed, so the bugs looked unfixed. Re-checking
+   periodically, and whenever the tab regains focus, closes that gap. */
+var lastBuildCheck = Date.now();
+function maybeCheckForNewerBuild() {
+  var now = Date.now();
+  if (now - lastBuildCheck < 60 * 1000) return; // throttle: at most once a minute
+  lastBuildCheck = now;
+  checkForNewerBuild();
+}
+try {
+  setInterval(maybeCheckForNewerBuild, 5 * 60 * 1000); // and every 5 minutes while left open
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") maybeCheckForNewerBuild();
+  });
+  window.addEventListener("focus", maybeCheckForNewerBuild);
+} catch (e) {}
 })();
 </script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0"></script>
@@ -181,8 +204,8 @@ checkForNewerBuild();
   .toolbar-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   #file-count { color: var(--text-dim); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
   .toolbar-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .sort-control select, .folder-control select, .type-control select, .view-control select,
-  .encryption-control select { padding: 6px 10px; font-size: 13px; }
+  .sort-control select, .folder-control select, .type-control select, .view-control select
+    { padding: 6px 10px; font-size: 13px; }
   .search-control input {
     padding: 6px 10px; font-size: 13px; min-width: 190px;
     background: var(--ink); color: var(--text); border: 1px solid var(--line); border-radius: 7px;
@@ -488,6 +511,10 @@ checkForNewerBuild();
   .modal-next { right: 10px; }
   #viewer-media { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 10px; min-height: 120px; margin-bottom: 18px; position: relative; }
   #viewer-media img, #viewer-media video { max-width: 100%; max-height: 50vh; border-radius: 8px; }
+  /* Rotated video: the wrap is sized to the box the rotated video should
+     occupy on screen; the video inside keeps its own unrotated size and is
+     just turned with a transform -- see applyVideoRotation(). */
+  .video-rotate-wrap { display: flex; align-items: center; justify-content: center; }
   #viewer-media img.viewer-poster { filter: blur(1.5px) brightness(0.75); }
   .viewer-loading-label {
     position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -563,19 +590,22 @@ checkForNewerBuild();
   .viewer-photo-crop:hover { background: var(--brass); color: #1c1406; }
   .viewer-photo-crop svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
   .viewer-photo-crop.hidden { display: none; }
-  /* Rotate left / right -- photo-only, so they sit past the video-only
-     buttons rather than sharing a slot with any of them. */
-  .viewer-photo-rotate {
+  /* Rotate left / right -- one pair for photos (destructive, re-encodes the
+     file), a second for videos (a display-only transform -- see "Video
+     rotate" below for why). The two pairs are never shown at once, so they
+     share the same slot past the video-only buttons rather than needing a
+     slot each. */
+  .viewer-photo-rotate, .viewer-video-rotate {
     position: absolute; top: 12px; z-index: 3;
     background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
     border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;
   }
-  #btn-viewer-rotate-ccw { right: 266px; }
-  #btn-viewer-rotate-cw { right: 308px; }
-  .viewer-photo-rotate:hover { background: var(--brass); color: #1c1406; }
-  .viewer-photo-rotate:disabled { opacity: 0.5; cursor: default; }
-  .viewer-photo-rotate svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
-  .viewer-photo-rotate.hidden { display: none; }
+  #btn-viewer-rotate-ccw, #btn-viewer-rotate-video-ccw { right: 266px; }
+  #btn-viewer-rotate-cw, #btn-viewer-rotate-video-cw { right: 308px; }
+  .viewer-photo-rotate:hover, .viewer-video-rotate:hover { background: var(--brass); color: #1c1406; }
+  .viewer-photo-rotate:disabled, .viewer-video-rotate:disabled { opacity: 0.5; cursor: default; }
+  .viewer-photo-rotate svg, .viewer-video-rotate svg { width: 17px; height: 17px; flex: 0 0 auto; display: block; }
+  .viewer-photo-rotate.hidden, .viewer-video-rotate.hidden { display: none; }
   .viewer-video-details {
     display: none; position: absolute; top: 12px; right: 140px; z-index: 3;
     background: rgba(20,18,12,0.55); border: none; color: #f5f1e6; width: 34px; height: 34px;
@@ -976,16 +1006,6 @@ checkForNewerBuild();
           <div class="folder-control">
             <select id="folder-select" aria-label="Folder"></select>
           </div>
-          <div class="encryption-control">
-            <select id="encryption-select" aria-label="Storage">
-              <option value="">All storage</option>
-              <option value="encrypted">Encrypted only</option>
-              <option value="plain">Unencrypted only</option>
-            </select>
-          </div>
-          <div class="person-control">
-            <select id="person-select" aria-label="Person"></select>
-          </div>
           <div class="sort-control">
             <select id="sort-select">
               <option value="added_desc" selected>Recently added</option>
@@ -1103,6 +1123,12 @@ checkForNewerBuild();
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h11a5 5 0 0 1 5 5v1a5 5 0 0 1-5 5H8"/><polyline points="7 4 3 8 7 12"/></svg>
       </button>
       <button class="viewer-photo-rotate hidden" id="btn-viewer-rotate-cw" title="Rotate right" aria-label="Rotate right 90 degrees">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8H10a5 5 0 0 0-5 5v1a5 5 0 0 0 5 5h6"/><polyline points="17 4 21 8 17 12"/></svg>
+      </button>
+      <button class="viewer-video-rotate hidden" id="btn-viewer-rotate-video-ccw" title="Rotate left" aria-label="Rotate video left 90 degrees">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h11a5 5 0 0 1 5 5v1a5 5 0 0 1-5 5H8"/><polyline points="7 4 3 8 7 12"/></svg>
+      </button>
+      <button class="viewer-video-rotate hidden" id="btn-viewer-rotate-video-cw" title="Rotate right" aria-label="Rotate video right 90 degrees">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8H10a5 5 0 0 0-5 5v1a5 5 0 0 0 5 5h6"/><polyline points="17 4 21 8 17 12"/></svg>
       </button>
       <button class="viewer-video-details" id="btn-viewer-details" title="Details" aria-label="Details">
@@ -1875,7 +1901,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-16e paste-classify-fix";
+var GHOSTDRIVE_BUILD = "2026-09-16f rotate-video-and-selfheal";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -1937,7 +1963,7 @@ function enterVault() {
   setTimeout(function () { prewarmReels().catch(function () {}); }, 1500);
   // Pull down any face groups another device already worked out, so the
   // People panel isn't empty here just because the scan ran over there.
-  loadPeopleRegistryFromVault().then(function () { renderPersonOptions(); }).catch(function () {});
+  loadPeopleRegistryFromVault().catch(function () {});
 }
 
 /* ---------------- Vault crypto material: created on first login, reused after ----------------
@@ -2485,10 +2511,17 @@ function bindPasteBox() {
     });
   }
   /* A paste anywhere else in the vault works too -- except while typing in
-     the search box or another real field, where the paste belongs to them. */
+     the search box or another real field, where the paste belongs to them.
+     A paste that lands ON the box's own input must NOT be handled here too:
+     input already has its own "paste" listener above, and paste events
+     bubble, so without this the same clipboard paste ran through
+     handlePaste twice -- two uploads queued for one paste, often with the
+     same auto-generated name, which is what made a single paste look like
+     it "failed" (the second, colliding upload would error out). */
   window.addEventListener("paste", function (e) {
     var t = e.target;
-    if (t && t !== input) {
+    if (t === input) return;
+    if (t) {
       if (t.isContentEditable) return;
       if (t.tagName === "TEXTAREA") return;
       if (t.tagName === "INPUT" && !t.readOnly && !t.disabled) return;
@@ -4782,12 +4815,6 @@ $("#type-select").addEventListener("change", function (e) { currentType = e.targ
 // the first render, but an empty dropdown until then looks broken.
 renderTypeOptions([]);
 
-/* Filters by how an item's content is STORED, which is a different axis
-   from what kind of file it is -- and the one that matters when the goal
-   is finding the legacy encrypted-content items to clear out. */
-var currentEncryption = "";
-$("#encryption-select").addEventListener("change", function (e) { currentEncryption = e.target.value; refreshGallery(); });
-
 /* Name search. Debounced because re-rendering several hundred tiles on
    every keystroke makes typing feel like wading. Matches folder names too,
    so typing a folder name finds its contents without changing the folder
@@ -5718,10 +5745,6 @@ function refreshGallery() {
           : it.record.kind === currentType;
       });
     }
-    if (currentEncryption) {
-      var wantEncrypted = currentEncryption === "encrypted";
-      items = items.filter(function (it) { return itemIsEncrypted(it.metaJson) === wantEncrypted; });
-    }
     if (currentSearch) {
       items = items.filter(function (it) {
         return (it.metaJson.name || "").toLowerCase().indexOf(currentSearch) !== -1
@@ -5729,12 +5752,6 @@ function refreshGallery() {
       });
     }
     if (duplicateIds) items = items.filter(function (it) { return duplicateIds.has(it.record.id); });
-    if (currentPerson) {
-      items = items.filter(function (it) {
-        return (it.metaJson.people || []).indexOf(currentPerson) !== -1;
-      });
-    }
-    renderPersonOptions();
     $("#empty-state").classList.toggle("hidden", items.length > 0);
     $("#empty-state").textContent = duplicateIds
       ? "No duplicates left in this view."
@@ -5754,7 +5771,7 @@ function refreshGallery() {
     // not -- it is the number you're working down, so it shouldn't vanish
     // the moment you narrow the view.
     var encryptedCount = allItems.reduce(function (n, it) { return n + (itemIsEncrypted(it.metaJson) ? 1 : 0); }, 0);
-    var countText = (currentFolder || currentType || currentPerson || currentEncryption || currentSearch || duplicateIds)
+    var countText = (currentFolder || currentType || currentSearch || duplicateIds)
       ? visibleCount + " of " + totalCount + " " + noun(totalCount)
       : totalCount + " " + noun(totalCount);
     if (encryptedCount) countText += " · " + encryptedCount + " encrypted";
@@ -6150,7 +6167,7 @@ function pickHoverStartFraction(record, fileKey, blob) {
   }).catch(function () { return 0; });
 }
 
-function wireVideoHoverPreview(tile, img, record, metaJson) {
+function wireVideoHoverPreview(tile, img, record, metaJson, rotation) {
   var video = null;
   var hoverToken = 0;
   var hoverStartTime = 0;
@@ -6179,6 +6196,7 @@ function wireVideoHoverPreview(tile, img, record, metaJson) {
             video.currentTime = hoverStartTime;
           }
         });
+        if (rotation) video.style.transform = "rotate(" + rotation + "deg)";
         tile.insertBefore(video, img.nextSibling);
       }
       video.src = url;
@@ -6217,21 +6235,29 @@ function renderTile(record, metaJson) {
   // straight from the original file; older items don't, so they start at
   // a neutral 1:1 guess and get corrected (and relaid-out) the moment
   // their thumbnail image actually loads and reports its real dimensions.
-  tile.dataset.aspect = (metaJson.width && metaJson.height) ? (metaJson.width / metaJson.height) : 1;
+  var tileRotation = record.kind === "video" ? itemRotation(metaJson) : 0;
+  var tileSwapped = tileRotation === 90 || tileRotation === 270;
+  var baseAspect = (metaJson.width && metaJson.height) ? (metaJson.width / metaJson.height) : 1;
+  // A rotated video's thumbnail was captured from the un-rotated frame, so
+  // the box it sits in has to use the swapped ratio too, or a portrait
+  // clip rotated upright ends up shown in a landscape-shaped tile.
+  tile.dataset.aspect = tileSwapped ? (1 / baseAspect) : baseAspect;
   if (selectedIds.has(record.id)) tile.classList.add("selected");
 
   if (record.thumbnail_path) {
     var img = document.createElement("img");
+    if (tileRotation) img.style.transform = "rotate(" + tileRotation + "deg)";
     if (!(metaJson.width && metaJson.height)) {
       img.addEventListener("load", function () {
         if (!img.naturalWidth || !img.naturalHeight) return;
-        tile.dataset.aspect = img.naturalWidth / img.naturalHeight;
+        var natAspect = img.naturalWidth / img.naturalHeight;
+        tile.dataset.aspect = tileSwapped ? (1 / natAspect) : natAspect;
         scheduleRelayout(tile.parentElement);
       });
     }
     loadThumbnail(record).then(function (url) { if (url) img.src = url; });
     tile.appendChild(img);
-    if (record.kind === "video") wireVideoHoverPreview(tile, img, record, metaJson);
+    if (record.kind === "video") wireVideoHoverPreview(tile, img, record, metaJson, tileRotation);
   } else {
     // Note this writes into a child, not the tile. Setting textContent on
     // the tile would also wipe every sibling appended after it, and sizing
@@ -6609,7 +6635,7 @@ function openViewer(id) {
   sb.from("objects").select("*").eq("id", id).maybeSingle().then(function (res) {
     record = res.data;
     var loaded = loadObjectMeta(record);
-    viewerState = { id: id, fileKey: loaded.fileKey, metaJson: loaded.metaJson, mediaUrl: null, wantOriginal: prevWantOriginal };
+    viewerState = { id: id, record: record, fileKey: loaded.fileKey, metaJson: loaded.metaJson, mediaUrl: null, wantOriginal: prevWantOriginal };
 
     // Fast-playback toggle/backfill button (video only) -- see the "Fast
     // video preview" section above for what generates and consumes these.
@@ -6643,6 +6669,7 @@ function openViewer(id) {
     $("#btn-viewer-crop").classList.add("hidden");
     $("#btn-viewer-crop-icon").classList.add("hidden");
     $$(".viewer-photo-rotate").forEach(function (b) { b.classList.add("hidden"); });
+    $$(".viewer-video-rotate").forEach(function (b) { b.classList.add("hidden"); });
     $("#btn-viewer-trim").classList.add("hidden");
     exitCropMode();
     exitTrimMode();
@@ -6731,6 +6758,8 @@ function openViewer(id) {
       mediaHost.appendChild(streamVideo);
       viewerState.videoEl = streamVideo;
       $("#btn-viewer-trim").classList.toggle("hidden", typeof streamVideo.captureStream !== "function");
+      $$(".viewer-video-rotate").forEach(function (b) { b.classList.remove("hidden"); });
+      applyVideoRotation(mediaHost, streamVideo, itemRotation(viewerState.metaJson));
       var modalContentElStream = document.querySelector("#viewer-modal .modal-content");
       if (modalContentElStream) modalContentElStream.classList.add("media-mode");
       return "progressive"; // reuses the existing "already handled, skip the blob path" marker
@@ -6796,6 +6825,8 @@ function openViewer(id) {
       mediaHost.appendChild(video);
       viewerState.videoEl = video;
       $("#btn-viewer-trim").classList.toggle("hidden", typeof video.captureStream !== "function");
+      $$(".viewer-video-rotate").forEach(function (b) { b.classList.remove("hidden"); });
+      applyVideoRotation(mediaHost, video, itemRotation(viewerState.metaJson));
       return;
     }
 
@@ -7346,6 +7377,104 @@ function rotateCurrentPhoto(direction) {
 }
 $("#btn-viewer-rotate-cw").addEventListener("click", function () { rotateCurrentPhoto("cw"); });
 $("#btn-viewer-rotate-ccw").addEventListener("click", function () { rotateCurrentPhoto("ccw"); });
+
+/* ---------------- Video rotate ----------------
+   Photo rotate above re-encodes the actual pixels because a photo is one
+   frame -- cheap either way. A video is not: redrawing every frame through
+   canvas and re-encoding client-side would mean transcoding the whole file
+   just to turn it 90 degrees, which is slow, re-compresses it, and for
+   anything longer than a couple of minutes isn't realistic in a browser tab
+   at all. So this is what every phone gallery app actually does under the
+   hood for "rotate" -- the original bytes are never touched, and a
+   rotation is stored as a small piece of metadata that playback (and the
+   thumbnail) apply as a display transform. Non-destructive, instant, and
+   it works on a video of any length. */
+function itemRotation(metaJson) {
+  var r = (metaJson && metaJson.rotation) || 0;
+  return (r === 90 || r === 180 || r === 270) ? r : 0;
+}
+// A plain CSS transform on the <video> rotates it in place, but its box
+// keeps the PRE-rotation shape -- fine at 180, but at 90/270 a landscape
+// clip in a landscape box ends up rotated sideways *within* that sideways
+// box, half of it hanging outside the visible area. Wrapping it in a
+// container sized to the POST-rotation aspect ratio, then sizing the video
+// itself to the swapped dimensions before rotating it into that container,
+// is what makes it land upright and fully visible instead.
+function applyVideoRotation(mediaHost, videoEl, rotation) {
+  if (!videoEl) return;
+  var prevWrap = mediaHost.querySelector(".video-rotate-wrap");
+  var wrap = prevWrap;
+  if (!rotation) {
+    videoEl.style.transform = "";
+    videoEl.style.width = "";
+    videoEl.style.height = "";
+    videoEl.style.maxWidth = "";
+    videoEl.style.maxHeight = "";
+    if (wrap) { // unwrap -- put the video back as a direct child
+      wrap.parentNode.insertBefore(videoEl, wrap);
+      wrap.remove();
+    }
+    return;
+  }
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.className = "video-rotate-wrap";
+    videoEl.parentNode.insertBefore(wrap, videoEl);
+    wrap.appendChild(videoEl);
+  }
+  videoEl.style.transformOrigin = "center center";
+  videoEl.style.transform = "rotate(" + rotation + "deg)";
+  // The ordinary #viewer-media/media-mode video rules cap the video's own
+  // box to the space it'd need unrotated -- exactly what must NOT apply
+  // here, since the video's pre-rotation box is deliberately sized larger
+  // or smaller than the space it ends up occupying once rotated. fit()
+  // below is the only thing sizing it from this point on.
+  videoEl.style.maxWidth = "none";
+  videoEl.style.maxHeight = "none";
+  function fit() {
+    var vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+    if (!vw || !vh) return;
+    var swapped = rotation === 90 || rotation === 270;
+    // Mirrors the space the plain (unrotated) media-mode video/img rules
+    // give it -- see ".modal-content.media-mode #viewer-media video".
+    var maxW = Math.min(window.innerWidth * 0.9, 1180, mediaHost.clientWidth || Infinity);
+    var maxH = window.innerHeight * 0.78;
+    var postAspect = swapped ? (vh / vw) : (vw / vh);
+    var w = maxW, h = w / postAspect;
+    if (h > maxH) { h = maxH; w = h * postAspect; }
+    wrap.style.width = Math.round(w) + "px";
+    wrap.style.height = Math.round(h) + "px";
+    // The video keeps its OWN (unrotated) aspect ratio -- only the box it's
+    // rotating inside changes shape -- so size it to whichever of the fitted
+    // box's dimensions becomes its width/height once the rotation swaps them.
+    var innerW = swapped ? h : w, innerH = swapped ? w : h;
+    videoEl.style.width = Math.round(innerW) + "px";
+    videoEl.style.height = Math.round(innerH) + "px";
+  }
+  if (videoEl.readyState >= 1) fit();
+  else videoEl.addEventListener("loadedmetadata", fit, { once: true });
+}
+function rotateCurrentVideo(direction) {
+  if (!viewerState || !viewerState.id || !viewerState.record) return;
+  var current = itemRotation(viewerState.metaJson);
+  var delta = direction === "cw" ? 90 : -90;
+  var next = ((current + delta) % 360 + 360) % 360;
+  var buttons = $$(".viewer-video-rotate");
+  buttons.forEach(function (b) { b.disabled = true; });
+  patchObjectMetadata(viewerState.record, viewerState.fileKey, viewerState.metaJson, { rotation: next })
+    .then(function (patched) {
+      viewerState.metaJson = patched;
+      applyVideoRotation($("#viewer-media"), viewerState.videoEl, next);
+      refreshGallery(); // picks up the new rotation on the grid thumbnail too
+    })
+    .catch(function (err) {
+      console.error("[ghostdrive] video rotate failed:", err);
+      alert("Couldn't rotate this video: " + friendlyError(err));
+    })
+    .then(function () { buttons.forEach(function (b) { b.disabled = false; }); });
+}
+$("#btn-viewer-rotate-video-cw").addEventListener("click", function () { rotateCurrentVideo("cw"); });
+$("#btn-viewer-rotate-video-ccw").addEventListener("click", function () { rotateCurrentVideo("ccw"); });
 
 $("#btn-viewer-duplicate").addEventListener("click", function () {
   if (!viewerState || !viewerState.id) return;
@@ -7930,7 +8059,6 @@ function scanLibraryForFaces(rescanEverything) {
         savePeopleRegistry();
         status("Done — " + found + " " + (found === 1 ? "face" : "faces") + " across " + queue.length + " items.");
         renderPeopleList();
-        renderPersonOptions();
         return Promise.resolve();
       }
       var item = queue[done];
@@ -7980,7 +8108,6 @@ function renderPeopleList() {
 
     var img = document.createElement("img");
     img.alt = personDisplayName(person);
-    img.title = "Show everything with this person";
     card.appendChild(img);
     if (person.sampleItemId) {
       sb.from("objects").select("*").eq("id", person.sampleItemId).maybeSingle().then(function (res) {
@@ -7989,12 +8116,6 @@ function renderPeopleList() {
         return loadThumbnail(res.data).then(function (url) { if (url) img.src = url; });
       }).catch(function () {});
     }
-    img.addEventListener("click", function () {
-      currentPerson = pid;
-      $("#person-select").value = pid;
-      hideModal("#people-modal");
-      refreshGallery();
-    });
 
     var nameInput = document.createElement("input");
     nameInput.type = "text";
@@ -8003,7 +8124,6 @@ function renderPeopleList() {
     nameInput.addEventListener("change", function () {
       person.name = nameInput.value.trim();
       savePeopleRegistry();
-      renderPersonOptions();
     });
     card.appendChild(nameInput);
 
@@ -8016,28 +8136,6 @@ function renderPeopleList() {
   });
 }
 
-function renderPersonOptions() {
-  var select = $("#person-select");
-  if (!select) return;
-  var reg = getPeopleRegistry();
-  var ids = Object.keys(reg.people).sort(function (a, b) {
-    return (reg.people[b].count || 0) - (reg.people[a].count || 0);
-  });
-  select.innerHTML = "";
-  var all = document.createElement("option");
-  all.value = ""; all.textContent = "Everyone";
-  select.appendChild(all);
-  ids.forEach(function (pid) {
-    var opt = document.createElement("option");
-    opt.value = pid;
-    opt.textContent = personDisplayName(reg.people[pid]);
-    select.appendChild(opt);
-  });
-  select.value = currentPerson || "";
-}
-
-var currentPerson = "";
-$("#person-select").addEventListener("change", function (e) { currentPerson = e.target.value; refreshGallery(); });
 /* Thumbnails are generated exactly once, at upload, from whatever the
    browser could decode at that moment. So every HEIC uploaded outside
    Safari, and every RAW whose embedded preview couldn't be found, has no
