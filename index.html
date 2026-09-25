@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-16h remove-file-encrypted add-download-all";
+var GHOSTDRIVE_BUILD = "2026-09-25a folder-rename-and-safe-folder-prompts";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -481,6 +481,12 @@ try {
   .folder-rail-hint { font-size: 12px; color: var(--text-dim); margin-left: 4px; }
   .folder-chip.folder-toggle { background: transparent; border-color: var(--line); color: var(--text-dim); }
   .folder-chip.folder-toggle:hover { border-color: var(--text-dim); color: var(--text); }
+  .folder-chip-rename {
+    background: transparent; border: 1px solid transparent; color: var(--text-dim);
+    border-radius: 999px; width: 24px; height: 24px; padding: 0; margin-left: -4px;
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .folder-chip-rename:hover { color: var(--text); border-color: var(--line); }
 
   .empty-state {
     text-align: center; color: var(--text-dim); padding: 90px 20px; font-size: 15px;
@@ -710,6 +716,11 @@ try {
     font-size: 10.5px; font-family: var(--mono); vertical-align: middle;
   }
   .log-modal-content { max-width: 640px; }
+  .prompt-modal-content { max-width: 380px; }
+  .prompt-modal-content h3 { margin-top: 0; }
+  .prompt-modal-content input[type="text"] { width: 100%; box-sizing: border-box; margin: 4px 0 12px; }
+  .prompt-modal-content .hint { margin: -6px 0 12px; }
+  .prompt-modal-content .viewer-actions { justify-content: flex-end; }
   #log-list { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow-y: auto; margin: 14px 0; }
   .log-empty { color: var(--text-dim); font-size: 13.5px; text-align: center; padding: 24px 0; }
   .log-row {
@@ -1233,6 +1244,20 @@ try {
       <span id="people-scan-status" class="hint"></span>
     </div>
     <div id="people-list" class="people-list"></div>
+  </div>
+</div>
+
+<div id="text-prompt-modal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-content prompt-modal-content">
+    <button class="modal-close" id="btn-text-prompt-close">&times;</button>
+    <h3 id="text-prompt-title">Name this folder</h3>
+    <p id="text-prompt-hint" class="hint"></p>
+    <input type="text" id="text-prompt-input" autocomplete="off">
+    <div class="viewer-actions">
+      <button type="button" id="btn-text-prompt-cancel" class="secondary">Cancel</button>
+      <button type="button" id="btn-text-prompt-ok">OK</button>
+    </div>
   </div>
 </div>
 
@@ -1786,6 +1811,56 @@ function $$(sel) { return Array.prototype.slice.call(document.querySelectorAll(s
 function showScreen(id) { $$(".screen").forEach(function (s) { s.classList.add("hidden"); }); $(id).classList.remove("hidden"); }
 function showModal(id) { $(id).classList.remove("hidden"); }
 function hideModal(id) { $(id).classList.add("hidden"); }
+
+/* In-page replacement for window.prompt(). iOS Safari does not support
+   prompt()/confirm() when the app is running standalone (added to the home
+   screen) -- there is no browser chrome for the dialog to render in, and on
+   at least some iOS versions calling it closes the page outright instead of
+   quietly no-op'ing. Every place that used to ask for a folder name goes
+   through this instead. Returns a Promise<string|null>: null on cancel or
+   an empty/whitespace-only answer, otherwise the trimmed text. Only one of
+   these can be open at a time, which is all this app ever needs. */
+function askText(opts) {
+  opts = opts || {};
+  var modal = $("#text-prompt-modal");
+  var input = $("#text-prompt-input");
+  var hint = $("#text-prompt-hint");
+  $("#text-prompt-title").textContent = opts.title || "";
+  input.value = opts.initial || "";
+  input.placeholder = opts.placeholder || "";
+  if (opts.hint) { hint.textContent = opts.hint; hint.classList.remove("hidden"); }
+  else { hint.textContent = ""; hint.classList.add("hidden"); }
+  $("#btn-text-prompt-ok").textContent = opts.okLabel || "OK";
+  showModal("#text-prompt-modal");
+  setTimeout(function () { input.focus(); input.select(); }, 0);
+
+  return new Promise(function (resolve) {
+    var okBtn = $("#btn-text-prompt-ok");
+    var cancelBtn = $("#btn-text-prompt-cancel");
+    var closeBtn = $("#btn-text-prompt-close");
+    var backdrop = modal.querySelector(".modal-backdrop");
+    function cleanup(value) {
+      hideModal("#text-prompt-modal");
+      input.removeEventListener("keydown", onKeydown);
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      closeBtn.removeEventListener("click", onCancel);
+      backdrop.removeEventListener("click", onCancel);
+      resolve(value);
+    }
+    function onOk() { cleanup((input.value || "").trim() || null); }
+    function onCancel() { cleanup(null); }
+    function onKeydown(e) {
+      if (e.key === "Enter") { e.preventDefault(); onOk(); }
+      else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+    }
+    input.addEventListener("keydown", onKeydown);
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    closeBtn.addEventListener("click", onCancel);
+    backdrop.addEventListener("click", onCancel);
+  });
+}
 function friendlyError(err) {
   /* err ending up null/undefined here has happened before -- some promise
      in the chain rejected (or an .onerror fired) without a real Error
@@ -1901,7 +1976,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-16h remove-file-encrypted add-download-all";
+var GHOSTDRIVE_BUILD = "2026-09-25a folder-rename-and-safe-folder-prompts";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -5161,6 +5236,74 @@ function removeItemsFromFolder(ids, folderName) {
   });
 }
 
+function renameFolderPrompt(oldName) {
+  askText({
+    title: "Rename folder",
+    initial: oldName,
+    placeholder: "Folder name",
+    okLabel: "Rename",
+  }).then(function (newName) {
+    if (!newName || newName === oldName) return;
+    renameFolder(oldName, newName);
+  });
+}
+
+/* Renames a folder everywhere it appears. A folder isn't a real record --
+   it's just a tag string repeated inside every item's own encrypted
+   metadata -- so "renaming" it means finding every item across the WHOLE
+   library that carries the old tag and patching each one to carry the new
+   tag instead, same as addItemsToFolder/removeItemsFromFolder but scoped by
+   folder membership rather than by an id list, and over fetchAllObjects
+   rather than just what's currently loaded, since a folder can easily
+   contain items outside the current view or search filter. */
+function renameFolder(oldName, newName) {
+  var status = $("#selection-status");
+  if (status) status.textContent = 'Renaming "' + oldName + '"…';
+  return fetchAllObjects().then(function (allRows) {
+    // Same guard every other library-wide pass uses -- a private item's
+    // folder tags don't get touched (or even looked at) while locked.
+    var rows = withoutPrivateRows(allRows);
+    var at = 0, done = 0, failed = 0;
+    var changes = [];
+    function step() {
+      if (at >= rows.length) {
+        if (done) {
+          knownFolders.delete(oldName);
+          knownFolders.add(newName);
+          if (currentFolder === oldName) currentFolder = newName;
+          pushUndo('rename folder to "' + newName + '"', changes);
+        }
+        if (status) {
+          status.textContent = done
+            ? 'Renamed "' + oldName + '" to "' + newName + '"' + (failed ? ", " + failed + " failed" : "") + "."
+            : 'Nothing was in "' + oldName + '".';
+          setTimeout(function () {
+            if (status.textContent.indexOf("Renamed") === 0 || status.textContent.indexOf("Nothing") === 0) status.textContent = "";
+          }, 5000);
+        }
+        refreshGallery();
+        return;
+      }
+      var record = rows[at];
+      var loaded;
+      try { loaded = loadObjectMeta(record); } catch (e) { failed++; at++; return step(); }
+      if (!itemInFolder(loaded.metaJson, oldName)) { at++; return step(); }
+      var beforeRename = foldersPatch(itemFolders(loaded.metaJson));
+      var renamed = itemFolders(loaded.metaJson).map(function (f) { return f === oldName ? newName : f; });
+      var afterRename = foldersPatch(renamed);
+      patchObjectMetadata(record, loaded.fileKey, loaded.metaJson, afterRename)
+        .then(function () {
+          changes.push({ id: record.id, before: beforeRename, after: afterRename });
+          done++; at++; step();
+        })
+        .catch(function () { failed++; at++; step(); });
+    }
+    step();
+  }).catch(function (err) {
+    if (status) status.textContent = "Couldn't rename: " + friendlyError(err);
+  });
+}
+
 /* A row of folder chips that doubles as a filter and as the drop target for
    dragging a selection into a folder. A <select> can't be dropped onto,
    which is why this exists alongside the dropdown rather than replacing
@@ -5295,14 +5438,15 @@ function renderFolderRail(allFolders) {
     el.textContent = label;
     el.addEventListener("click", function () {
       if (isNew) {
-        var name = (prompt("Name this folder:") || "").trim();
-        if (!name) return;
-        knownFolders.add(name);
-        if (selectedIds.size && confirm('Add the ' + selectedIds.size + ' selected item(s) to "' + name + '" now?')) {
-          addItemsToFolder(Array.from(selectedIds), name);
-          return;
-        }
-        refreshGallery();
+        askText({ title: "Name this folder", placeholder: "Folder name" }).then(function (name) {
+          if (!name) return;
+          knownFolders.add(name);
+          if (selectedIds.size) {
+            addItemsToFolder(Array.from(selectedIds), name);
+            return;
+          }
+          refreshGallery();
+        });
         return;
       }
       currentFolder = value;
@@ -5328,6 +5472,21 @@ function renderFolderRail(allFolders) {
       });
     }
     rail.appendChild(el);
+
+    // Rename, for a real folder only -- not "All items" or "+ New folder".
+    if (!isNew && value) {
+      var editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "folder-chip-rename";
+      editBtn.title = "Rename folder";
+      editBtn.setAttribute("aria-label", "Rename folder \"" + label + "\"");
+      editBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+      editBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        renameFolderPrompt(value);
+      });
+      rail.appendChild(editBtn);
+    }
   }
 
   /* Folder names stay hidden until asked for. A row of labels sitting
@@ -5380,11 +5539,19 @@ function renderFolderRail(allFolders) {
 
 $("#btn-selection-folder").addEventListener("click", function () {
   if (!selectedIds.size) return;
-  var known = Array.from(knownFolders).sort().join(", ");
-  var name = (prompt("Add " + selectedIds.size + " item(s) to which folder?"
-    + (known ? "\n\nExisting: " + known : ""), currentFolder || "") || "").trim();
-  if (!name) return;
-  addItemsToFolder(Array.from(selectedIds), name);
+  // The reserved private-folder marker never belongs in this list -- it's a
+  // control-character string, not a real folder name anyone typed.
+  var known = visibleFolderNames(Array.from(knownFolders)).sort().join(", ");
+  askText({
+    title: "Add " + selectedIds.size + " item(s) to which folder?",
+    initial: currentFolder && currentFolder !== PRIVATE_FOLDER ? currentFolder : "",
+    placeholder: "Folder name",
+    hint: known ? "Existing: " + known : "",
+    okLabel: "Add",
+  }).then(function (name) {
+    if (!name) return;
+    addItemsToFolder(Array.from(selectedIds), name);
+  });
 });
 $("#btn-selection-unfolder").addEventListener("click", function () {
   if (!selectedIds.size || !currentFolder) return;
@@ -5648,11 +5815,12 @@ var knownFolders = new Set();
 $("#folder-select").addEventListener("change", function (e) {
   var val = e.target.value;
   if (val === "__new__") {
-    var name = (prompt("Name this folder:") || "").trim();
-    if (!name) { renderFolderOptions(); return; }
-    knownFolders.add(name);
-    currentFolder = name;
-    refreshGallery();
+    askText({ title: "Name this folder", placeholder: "Folder name" }).then(function (name) {
+      if (!name) { renderFolderOptions(); return; }
+      knownFolders.add(name);
+      currentFolder = name;
+      refreshGallery();
+    });
     return;
   }
   currentFolder = val;
