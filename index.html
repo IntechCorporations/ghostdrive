@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-25a folder-rename-and-safe-folder-prompts";
+var GHOSTDRIVE_BUILD = "2026-09-29a defer-self-heal-reload-during-export";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -45,6 +45,23 @@ function checkForNewerBuild() {
         try { already = sessionStorage.getItem(flag); } catch (e) {}
         if (already === served) {
           console.warn("[ghostdrive] server has build", served, "but reload did not take effect -- not retrying.");
+          return;
+        }
+
+        /* A reload here throws away anything running in the page -- most
+           importantly an in-progress upload or a "Download all" export,
+           both of which can easily run for several minutes on a large
+           library. Before this guard, the periodic recheck (every 5
+           minutes) or a focus/visibility event mid-export would force a
+           reload right out from under it, discarding all progress -- a
+           big export could never outlast one of these checks, so it never
+           finished. Deliberately NOT setting the sessionStorage flag on
+           this path: the next periodic/focus check retries, and reloads
+           as soon as nothing is busy. */
+        var busy = false;
+        try { busy = (window.__ghostdriveUploadsInFlight > 0) || !!window.__ghostdriveExporting; } catch (e) {}
+        if (busy) {
+          console.warn("[ghostdrive] stale build", GHOSTDRIVE_BUILD, "-> ", served, "but an upload or export is running -- deferring the reload until it finishes.");
           return;
         }
         try { sessionStorage.setItem(flag, served); } catch (e) {}
@@ -1861,6 +1878,27 @@ function askText(opts) {
     backdrop.addEventListener("click", onCancel);
   });
 }
+/* Same rationale as askText() -- iOS Safari doesn't support confirm() any
+   more reliably than prompt() once the app is standalone. Reuses the same
+   modal with the text field hidden (nothing to type) and returns a plain
+   boolean instead of a string: true for OK, false for Cancel/Escape/
+   backdrop/close. The field is pre-filled with a non-empty sentinel before
+   opening -- askText() resolves an empty field to null exactly like
+   Cancel, so without this OK and Cancel would be indistinguishable here. */
+function askConfirm(opts) {
+  opts = opts || {};
+  var input = $("#text-prompt-input");
+  input.classList.add("hidden");
+  return askText({
+    title: opts.title || "Are you sure?",
+    hint: opts.message || "",
+    initial: "confirmed",
+    okLabel: opts.okLabel || "OK",
+  }).then(function (result) {
+    input.classList.remove("hidden");
+    return result !== null;
+  });
+}
 function friendlyError(err) {
   /* err ending up null/undefined here has happened before -- some promise
      in the chain rejected (or an .onerror fired) without a real Error
@@ -1976,7 +2014,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-25a folder-rename-and-safe-folder-prompts";
+var GHOSTDRIVE_BUILD = "2026-09-29a defer-self-heal-reload-during-export";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -4345,6 +4383,16 @@ function withUploadLock(id, fn) {
 // which is what was silently breaking an in-progress transfer -- see the
 // btn-lock handler below.
 var uploadsInFlight = 0;
+// Mirrored onto window (read-only from the outside) so the very first
+// <script> block -- the stale-build self-heal, which runs in its own IIFE
+// before this one even exists and has no other way to see into this scope --
+// can tell whether an upload is running before it forces a reload. See that
+// block's own comment for why this matters.
+try {
+  Object.defineProperty(window, "__ghostdriveUploadsInFlight", {
+    get: function () { return uploadsInFlight; }, configurable: true,
+  });
+} catch (e) {}
 
 // Called once the vault is unlocked, so anything left in the queue from a
 // tab that got closed (or a browser that crashed) mid-upload picks back up
@@ -8569,81 +8617,90 @@ function downloadAllAsZip() {
     var warning = "Download all " + items.length + " item" + (items.length === 1 ? "" : "s")
       + " (about " + formatSize(totalBytes) + ") as one .zip, organized by folder?\n\n"
       + "Everything gets downloaded and re-packaged, so this can take a while for a large library.";
-    if (!confirm(warning)) { status.textContent = ""; btn.disabled = false; return; }
+    return askConfirm({ title: "Download everything?", message: warning, okLabel: "Download" }).then(function (ok) {
+      if (!ok) { status.textContent = ""; return; }
 
-    // Every item's path inside the zip, de-duplicated within its own folder
-    // (two items can share a name if they're not actually the same file).
-    var usedNames = {};
-    items.forEach(function (it) {
-      var folderPath = zipFolderPathFor(it.loaded.metaJson);
-      var baseName = sanitizeZipComponent(it.loaded.metaJson.name || ("file." + (it.loaded.metaJson.ext || "bin")));
-      if (!usedNames[folderPath]) usedNames[folderPath] = new Set();
-      var finalName = baseName, n = 2;
-      while (usedNames[folderPath].has(finalName)) {
-        var dot = baseName.lastIndexOf(".");
-        finalName = dot > 0 ? baseName.slice(0, dot) + " (" + n + ")" + baseName.slice(dot) : baseName + " (" + n + ")";
-        n++;
-      }
-      usedNames[folderPath].add(finalName);
-      it.zipPath = folderPath ? folderPath + "/" + finalName : finalName;
-    });
-
-    var zipName = "ghostdrive-export-" + new Date().toISOString().slice(0, 10) + ".zip";
-    return (useFSA
-      ? window.showSaveFilePicker({ suggestedName: zipName, types: [{ description: "Zip archive", accept: { "application/zip": [".zip"] } }] })
-      : Promise.resolve(null)
-    ).then(function (handle) {
-      return Promise.resolve(handle ? handle.createWritable() : null).then(function (writable) {
-        var chunks = writable ? null : [];
-        var pendingWrite = Promise.resolve();
-        var failErr = null;
-        var zip = new fflate.Zip(function (err, dat) {
-          if (err) { failErr = err; return; }
-          pendingWrite = pendingWrite.then(function () { return writable ? writable.write(dat) : chunks.push(dat); });
-        });
-
-        var done = 0, failed = 0;
-        function processOne(it) {
-          status.textContent = "Downloading " + (done + failed + 1) + " of " + items.length + " — " + it.zipPath;
-          return downloadObjectContent(it.record, it.loaded.fileKey, it.loaded.metaJson, function (loaded, total) {
-            if (total) status.textContent = "Downloading " + (done + failed + 1) + " of " + items.length
-              + " — " + it.zipPath + " (" + Math.round((loaded / total) * 100) + "%)";
-          }).then(function (blob) { return blob.arrayBuffer(); })
-            .then(function (buf) {
-              var entry = new fflate.ZipPassThrough(it.zipPath);
-              zip.add(entry);
-              entry.push(new Uint8Array(buf), true);
-              return pendingWrite; // this file's bytes are flushed before the next download starts
-            })
-            .then(function () { done++; })
-            .catch(function (err) {
-              console.error("[ghostdrive] download-all: skipped", it.zipPath, err);
-              failed++;
-            });
+      // Every item's path inside the zip, de-duplicated within its own
+      // folder (two items can share a name if they're not actually the
+      // same file).
+      var usedNames = {};
+      items.forEach(function (it) {
+        var folderPath = zipFolderPathFor(it.loaded.metaJson);
+        var baseName = sanitizeZipComponent(it.loaded.metaJson.name || ("file." + (it.loaded.metaJson.ext || "bin")));
+        if (!usedNames[folderPath]) usedNames[folderPath] = new Set();
+        var finalName = baseName, n = 2;
+        while (usedNames[folderPath].has(finalName)) {
+          var dot = baseName.lastIndexOf(".");
+          finalName = dot > 0 ? baseName.slice(0, dot) + " (" + n + ")" + baseName.slice(dot) : baseName + " (" + n + ")";
+          n++;
         }
-        var at = 0;
-        function next() {
-          if (failErr) return Promise.reject(failErr);
-          if (at >= items.length) return Promise.resolve();
-          return processOne(items[at++]).then(next);
-        }
+        usedNames[folderPath].add(finalName);
+        it.zipPath = folderPath ? folderPath + "/" + finalName : finalName;
+      });
 
-        return next().then(function () {
-          zip.end();
-          return pendingWrite;
-        }).then(function () {
-          if (writable) return writable.close();
-          var blob = new Blob(chunks, { type: "application/zip" });
-          var a = document.createElement("a");
-          a.href = URL.createObjectURL(blob);
-          a.download = zipName;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
-        }).then(function () {
-          status.textContent = "Downloaded " + done + " of " + items.length + " item" + (items.length === 1 ? "" : "s")
-            + (failed ? ", " + failed + " failed (see console)" : "") + ".";
+      // Flagged for as long as the actual transfer runs -- see the
+      // self-heal guard at the very top of the file. Set only now, after
+      // the confirm step, so declining it (or having nothing to download)
+      // never leaves the flag stuck on.
+      window.__ghostdriveExporting = true;
+
+      var zipName = "ghostdrive-export-" + new Date().toISOString().slice(0, 10) + ".zip";
+      return (useFSA
+        ? window.showSaveFilePicker({ suggestedName: zipName, types: [{ description: "Zip archive", accept: { "application/zip": [".zip"] } }] })
+        : Promise.resolve(null)
+      ).then(function (handle) {
+        return Promise.resolve(handle ? handle.createWritable() : null).then(function (writable) {
+          var chunks = writable ? null : [];
+          var pendingWrite = Promise.resolve();
+          var failErr = null;
+          var zip = new fflate.Zip(function (err, dat) {
+            if (err) { failErr = err; return; }
+            pendingWrite = pendingWrite.then(function () { return writable ? writable.write(dat) : chunks.push(dat); });
+          });
+
+          var done = 0, failed = 0;
+          function processOne(it) {
+            status.textContent = "Downloading " + (done + failed + 1) + " of " + items.length + " — " + it.zipPath;
+            return downloadObjectContent(it.record, it.loaded.fileKey, it.loaded.metaJson, function (loaded, total) {
+              if (total) status.textContent = "Downloading " + (done + failed + 1) + " of " + items.length
+                + " — " + it.zipPath + " (" + Math.round((loaded / total) * 100) + "%)";
+            }).then(function (blob) { return blob.arrayBuffer(); })
+              .then(function (buf) {
+                var entry = new fflate.ZipPassThrough(it.zipPath);
+                zip.add(entry);
+                entry.push(new Uint8Array(buf), true);
+                return pendingWrite; // this file's bytes are flushed before the next download starts
+              })
+              .then(function () { done++; })
+              .catch(function (err) {
+                console.error("[ghostdrive] download-all: skipped", it.zipPath, err);
+                failed++;
+              });
+          }
+          var at = 0;
+          function next() {
+            if (failErr) return Promise.reject(failErr);
+            if (at >= items.length) return Promise.resolve();
+            return processOne(items[at++]).then(next);
+          }
+
+          return next().then(function () {
+            zip.end();
+            return pendingWrite;
+          }).then(function () {
+            if (writable) return writable.close();
+            var blob = new Blob(chunks, { type: "application/zip" });
+            var a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = zipName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
+          }).then(function () {
+            status.textContent = "Downloaded " + done + " of " + items.length + " item" + (items.length === 1 ? "" : "s")
+              + (failed ? ", " + failed + " failed (see console)" : "") + ".";
+          });
         });
       });
     });
@@ -8651,6 +8708,7 @@ function downloadAllAsZip() {
     if (err && err.name === "AbortError") { status.textContent = ""; return; } // save dialog cancelled
     status.textContent = "Couldn't download: " + friendlyError(err);
   }).then(function () {
+    window.__ghostdriveExporting = false;
     btn.disabled = false;
   });
 }
