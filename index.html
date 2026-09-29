@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-29a defer-self-heal-reload-during-export";
+var GHOSTDRIVE_BUILD = "2026-09-29b resumable-opfs-download-all";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -2014,7 +2014,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-29a defer-self-heal-reload-during-export";
+var GHOSTDRIVE_BUILD = "2026-09-29b resumable-opfs-download-all";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -8551,23 +8551,346 @@ $("#btn-rebuild-thumbs").addEventListener("click", rebuildMissingThumbnails);
 /* ---------------- Download all (.zip) ----------------
    Everything in the library (respecting the private-folder lock, same as
    every other bulk pass -- see withoutPrivateRows), packaged as one .zip,
-   organized into the same folders shown in the app. Two things make this
-   safe for a library with a lot of video in it rather than just a
-   convenience for a small one:
-   1. Only ONE item's bytes are ever in memory at a time -- items are
-      downloaded and written into the zip strictly one after another, never
-      buffered as a batch, so this doesn't scale with library size the way
-      building one giant Blob up front would.
-   2. Where the browser supports it (Chrome/Edge), the zip is streamed
-      straight to a file on disk via the File System Access API as it's
-      built, so the *zip itself* never sits fully in memory either. Safari
-      and Firefox don't have that API, so there it still has to fall back
-      to assembling the finished zip as one in-memory Blob before handing
-      it to a normal download link -- the per-item streaming above is what
-      that fallback still gets right, at least.
+   organized into the same folders shown in the app.
+
+   The zip is built into the Origin Private File System (OPFS) rather than
+   in memory or via the (Chrome/Edge-only) File System Access API. This
+   fixes the two complaints that came in about the old design in a row:
+   "it keeps reloading while doing the big export ... so it never
+   finishes" and "prep the zip so it's always ready ... doesn't have to
+   create it before download." OPFS is real, disk-backed, per-origin
+   storage -- not tied to the page's lifetime -- so:
+   1. Progress survives ANYTHING that would have killed the old in-memory
+      or FSA-writable-stream approach: a page reload (self-heal or
+      otherwise), this tab losing focus and Safari reclaiming its memory,
+      the network dropping mid-file, even the app being force-quit and
+      reopened later. The next "Download all" click resumes exactly where
+      it left off instead of restarting the whole thing.
+   2. Once a build finishes, the finished zip just sits in OPFS, ready.
+      Clicking "Download all" again -- even much later, even after a
+      reload -- hands it straight to a normal download with no rebuilding,
+      for as long as the library hasn't changed since (see sameIdSet()).
+   Safari only exposes synchronous, durable OPFS writes from inside a
+   dedicated Worker (FileSystemSyncAccessHandle -- see getExportWorker()
+   below); reading the finished file back out, once nothing still holds it
+   open for writing, works fine on the main thread via a plain
+   getFile(). Where OPFS isn't available at all, runExportLegacy() falls
+   back to the previous one-shot behavior (in-memory, FSA where possible)
+   -- no resume, but still correct.
+
+   Also: only ONE item's bytes are ever in memory at a time -- items are
+   downloaded and written into the zip strictly one after another, never
+   buffered as a batch -- and each item's download automatically retries
+   through a dropped connection (see downloadWithRetry) rather than
+   immediately giving up on it and everything after it.
+
    Compression is deliberately skipped (ZipPassThrough = "store" only):
    photos and videos are already-compressed formats, so re-compressing them
    would just burn CPU for a few bytes back. */
+var EXPORT_OPFS_NAME = "ghostdrive-export.zip.part";
+var EXPORT_MANIFEST_KEY = "ghostdrive-export-manifest";
+
+function exportOpfsSupported() {
+  try {
+    return !!(navigator.storage && navigator.storage.getDirectory
+      && typeof Worker === "function" && typeof Blob === "function" && typeof URL.createObjectURL === "function");
+  } catch (e) { return false; }
+}
+
+// The worker's entire job is owning one OPFS file and applying writes the
+// main thread sends it -- everything else (what to download, decrypting,
+// building the zip byte stream) stays on the main thread as before. Built
+// as a plain string rather than a stringified function: this file has no
+// build step, and a worker needs its own script, so a Blob URL is the only
+// way to keep it inline without adding a second deployed file.
+var EXPORT_WORKER_SRC = [
+  'var accessHandle = null;',
+  'function ensureHandle() {',
+  '  if (accessHandle) return Promise.resolve(accessHandle);',
+  '  return navigator.storage.getDirectory()',
+  '    .then(function (root) { return root.getFileHandle(' + JSON.stringify(EXPORT_OPFS_NAME) + ', { create: true }); })',
+  '    .then(function (h) { return h.createSyncAccessHandle(); })',
+  '    .then(function (ah) { accessHandle = ah; return ah; });',
+  '}',
+  'self.onmessage = function (e) {',
+  '  var msg = e.data;',
+  '  ensureHandle().then(function (ah) {',
+  '    if (msg.type === "reset") { ah.truncate(0); ah.flush(); return { size: 0 }; }',
+  '    if (msg.type === "write") { var n = ah.write(msg.bytes, { at: msg.at }); return { at: msg.at, n: n }; }',
+  '    if (msg.type === "flush") { ah.flush(); return { size: ah.getSize() }; }',
+  '    if (msg.type === "size") { return { size: ah.getSize() }; }',
+  '    if (msg.type === "close") { ah.flush(); ah.close(); accessHandle = null; return {}; }',
+  '    throw new Error("unknown export-worker message: " + msg.type);',
+  '  }).then(function (result) {',
+  '    self.postMessage({ id: msg.id, ok: true, result: result });',
+  '  }, function (err) {',
+  '    self.postMessage({ id: msg.id, ok: false, error: String((err && err.message) || err) });',
+  '  });',
+  '};',
+].join("\n");
+
+var exportWorkerState = null;
+function getExportWorker() {
+  if (exportWorkerState) return exportWorkerState;
+  var blobUrl = URL.createObjectURL(new Blob([EXPORT_WORKER_SRC], { type: "application/javascript" }));
+  var worker = new Worker(blobUrl);
+  var pending = new Map();
+  var nextId = 1;
+  worker.onmessage = function (e) {
+    var msg = e.data;
+    var p = pending.get(msg.id);
+    if (!p) return;
+    pending.delete(msg.id);
+    if (msg.ok) p.resolve(msg.result); else p.reject(new Error(msg.error));
+  };
+  function send(type, extra) {
+    return new Promise(function (resolve, reject) {
+      var id = nextId++;
+      pending.set(id, { resolve: resolve, reject: reject });
+      var payload = Object.assign({ id: id, type: type }, extra || {});
+      // Transfers the buffer instead of copying it -- write() consumes it,
+      // so the caller must not reuse the same bytes afterward.
+      var transfer = (extra && extra.bytes && extra.bytes.buffer) ? [extra.bytes.buffer] : [];
+      worker.postMessage(payload, transfer);
+    });
+  }
+  exportWorkerState = { worker: worker, send: send };
+  return exportWorkerState;
+}
+function exportOpfsReset() { return getExportWorker().send("reset"); }
+function exportOpfsWrite(at, bytes) { return getExportWorker().send("write", { at: at, bytes: bytes }); }
+function exportOpfsFlush() { return getExportWorker().send("flush"); }
+function exportOpfsClose() { return getExportWorker().send("close"); }
+// Reads the finished file back out. Only safe once exportOpfsClose() has
+// actually released the worker's sync access handle -- OPFS enforces one
+// writer at a time, so a stale open handle elsewhere can make this see a
+// truncated or inconsistent file.
+function exportOpfsReadFile() {
+  return navigator.storage.getDirectory()
+    .then(function (root) { return root.getFileHandle(EXPORT_OPFS_NAME); })
+    .then(function (handle) { return handle.getFile(); });
+}
+
+function readExportManifest() {
+  try {
+    var raw = localStorage.getItem(EXPORT_MANIFEST_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+function writeExportManifest(m) {
+  try { localStorage.setItem(EXPORT_MANIFEST_KEY, JSON.stringify(m)); } catch (e) {}
+}
+function clearExportManifest() {
+  try { localStorage.removeItem(EXPORT_MANIFEST_KEY); } catch (e) {}
+}
+// Same *set* of ids, regardless of order -- used to decide whether a
+// previously prepared (or in-progress) export still matches the library,
+// or the library has changed since and the old one has to be thrown away.
+function sameIdSet(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  var sa = a.slice().sort(), sb = b.slice().sort();
+  for (var i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
+}
+
+// Every item's path inside the zip, de-duplicated within its own folder
+// (two items can share a name if they're not actually the same file).
+// Returns a plain { id: zipPath } map rather than mutating the items, so
+// it can be persisted into the manifest as-is.
+function assignZipPaths(liveItems) {
+  var usedNames = {};
+  var zipPaths = {};
+  liveItems.forEach(function (it) {
+    var folderPath = zipFolderPathFor(it.loaded.metaJson);
+    var baseName = sanitizeZipComponent(it.loaded.metaJson.name || ("file." + (it.loaded.metaJson.ext || "bin")));
+    if (!usedNames[folderPath]) usedNames[folderPath] = new Set();
+    var finalName = baseName, n = 2;
+    while (usedNames[folderPath].has(finalName)) {
+      var dot = baseName.lastIndexOf(".");
+      finalName = dot > 0 ? baseName.slice(0, dot) + " (" + n + ")" + baseName.slice(dot) : baseName + " (" + n + ")";
+      n++;
+    }
+    usedNames[folderPath].add(finalName);
+    zipPaths[it.id] = folderPath ? folderPath + "/" + finalName : finalName;
+  });
+  return zipPaths;
+}
+
+function waitForOnline() {
+  if (navigator.onLine) return Promise.resolve();
+  return new Promise(function (resolve) {
+    function onOnline() { window.removeEventListener("online", onOnline); resolve(); }
+    window.addEventListener("online", onOnline);
+  });
+}
+// Wraps a single item's download with retry: a dropped connection waits
+// for the browser's own "online" event and then picks the SAME item back
+// up, rather than counting it as failed and cascading through everything
+// after it the moment a network blip happens. A handful of quick retries
+// cover anything else transient; a real, non-connectivity failure (a
+// corrupt or missing object) still gives up after 3 tries so one bad item
+// can't stall the whole export forever.
+function downloadWithRetry(record, fileKey, metaJson, onProgress, status) {
+  var attempts = 0;
+  function attempt() {
+    attempts++;
+    return downloadObjectContent(record, fileKey, metaJson, onProgress).catch(function (err) {
+      if (!navigator.onLine) {
+        if (status) status.textContent = "Waiting for a connection…";
+        return waitForOnline().then(attempt);
+      }
+      if (attempts < 3) {
+        return new Promise(function (resolve) { setTimeout(resolve, 1000 * attempts); }).then(attempt);
+      }
+      throw err;
+    });
+  }
+  return attempt();
+}
+
+function triggerBlobDownload(fileOrBlob, name) {
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(fileOrBlob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
+}
+
+// The OPFS-backed build loop -- used for both a fresh export (manifest
+// starts at completedCount 0) and resuming one that was interrupted
+// (completedCount picks up wherever it left off). liveItemsById supplies
+// the actual records for whatever ids remain, keyed by id since a resume's
+// fresh fetchAllObjects() call has no reason to come back in the same
+// order the manifest was built in.
+function runExport(manifest, liveItemsById, status) {
+  window.__ghostdriveExporting = true;
+  var items = manifest.itemIds;
+  var total = items.length;
+  var offset = manifest.offset;
+  var zipErr = null;
+  var pendingWrite = Promise.resolve();
+  var failed = 0;
+  var zip = new fflate.Zip(function (err, dat) {
+    if (err) { zipErr = err; return; }
+    var at = offset;
+    offset += dat.byteLength;
+    pendingWrite = pendingWrite.then(function () { return exportOpfsWrite(at, dat); });
+  });
+
+  function advanceAndSave() {
+    manifest.completedCount++;
+    manifest.offset = offset;
+    writeExportManifest(manifest); // after every item, so a crash loses at most the one in flight
+  }
+  function processOne(id) {
+    var it = liveItemsById.get(id);
+    var zipPath = manifest.zipPaths[id];
+    if (!it) { failed++; return advanceAndSave(); } // vanished since the snapshot -- skip it
+    status.textContent = "Preparing " + (manifest.completedCount + 1) + " of " + total + " — " + zipPath;
+    return downloadWithRetry(it.record, it.loaded.fileKey, it.loaded.metaJson, function (loadedBytes, totalBytes) {
+      if (totalBytes) status.textContent = "Preparing " + (manifest.completedCount + 1) + " of " + total
+        + " — " + zipPath + " (" + Math.round((loadedBytes / totalBytes) * 100) + "%)";
+    }, status).then(function (blob) { return blob.arrayBuffer(); })
+      .then(function (buf) {
+        var entry = new fflate.ZipPassThrough(zipPath);
+        zip.add(entry);
+        entry.push(new Uint8Array(buf), true);
+        return pendingWrite; // this file's bytes are flushed before the next download starts
+      })
+      .then(function () { advanceAndSave(); })
+      .catch(function (err) {
+        console.error("[ghostdrive] download-all: skipped", zipPath, err);
+        failed++;
+        advanceAndSave();
+      });
+  }
+  var at = manifest.completedCount;
+  function next() {
+    if (zipErr) return Promise.reject(zipErr);
+    if (at >= total) return Promise.resolve();
+    return processOne(items[at++]).then(next);
+  }
+
+  return next().then(function () {
+    zip.end();
+    return pendingWrite;
+  }).then(function () {
+    return exportOpfsFlush();
+  }).then(function () {
+    return exportOpfsClose();
+  }).then(function () {
+    manifest.done = true;
+    writeExportManifest(manifest);
+    return exportOpfsReadFile();
+  }).then(function (file) {
+    triggerBlobDownload(file, manifest.zipName);
+    var done = total - failed;
+    status.textContent = "Downloaded " + done + " of " + total + " item" + (total === 1 ? "" : "s")
+      + (failed ? ", " + failed + " failed (see console)" : "") + ".";
+  });
+}
+
+// The fallback for a browser with no OPFS support at all: today's
+// one-shot behavior (in-memory, or streamed via the File System Access
+// API where available) -- correct, just not resumable.
+function runExportLegacy(liveItems, zipPaths, zipName, status) {
+  window.__ghostdriveExporting = true;
+  var useFSA = typeof window.showSaveFilePicker === "function";
+  return (useFSA
+    ? window.showSaveFilePicker({ suggestedName: zipName, types: [{ description: "Zip archive", accept: { "application/zip": [".zip"] } }] })
+    : Promise.resolve(null)
+  ).then(function (handle) {
+    return Promise.resolve(handle ? handle.createWritable() : null).then(function (writable) {
+      var chunks = writable ? null : [];
+      var pendingWrite = Promise.resolve();
+      var failErr = null;
+      var zip = new fflate.Zip(function (err, dat) {
+        if (err) { failErr = err; return; }
+        pendingWrite = pendingWrite.then(function () { return writable ? writable.write(dat) : chunks.push(dat); });
+      });
+      var done = 0, failed = 0;
+      var total = liveItems.length;
+      function processOne(it) {
+        var zipPath = zipPaths[it.id];
+        status.textContent = "Downloading " + (done + failed + 1) + " of " + total + " — " + zipPath;
+        return downloadWithRetry(it.record, it.loaded.fileKey, it.loaded.metaJson, function (loadedBytes, totalBytes) {
+          if (totalBytes) status.textContent = "Downloading " + (done + failed + 1) + " of " + total
+            + " — " + zipPath + " (" + Math.round((loadedBytes / totalBytes) * 100) + "%)";
+        }, status).then(function (blob) { return blob.arrayBuffer(); })
+          .then(function (buf) {
+            var entry = new fflate.ZipPassThrough(zipPath);
+            zip.add(entry);
+            entry.push(new Uint8Array(buf), true);
+            return pendingWrite;
+          })
+          .then(function () { done++; })
+          .catch(function (err) {
+            console.error("[ghostdrive] download-all: skipped", zipPath, err);
+            failed++;
+          });
+      }
+      var at = 0;
+      function next() {
+        if (failErr) return Promise.reject(failErr);
+        if (at >= liveItems.length) return Promise.resolve();
+        return processOne(liveItems[at++]).then(next);
+      }
+      return next().then(function () {
+        zip.end();
+        return pendingWrite;
+      }).then(function () {
+        if (writable) return writable.close();
+        triggerBlobDownload(new Blob(chunks, { type: "application/zip" }), zipName);
+      }).then(function () {
+        status.textContent = "Downloaded " + done + " of " + total + " item" + (total === 1 ? "" : "s")
+          + (failed ? ", " + failed + " failed (see console)" : "") + ".";
+      });
+    });
+  });
+}
+
 function sanitizeZipComponent(name) {
   // Built as a numeric comparison rather than a \u0000-\u001f regex range --
   // a raw control character sitting in a <script> tag's source gets replaced
@@ -8597,111 +8920,70 @@ function downloadAllAsZip() {
   btn.disabled = true;
   status.textContent = "Looking at your library…";
 
-  var useFSA = typeof window.showSaveFilePicker === "function";
+  var opfsOk = exportOpfsSupported();
 
   fetchAllObjects().then(function (allRows) {
     var rows = withoutPrivateRows(allRows);
-    var items = [];
+    var liveItems = []; // { id, record, loaded }
     var unreadable = 0;
     rows.forEach(function (record) {
       var loaded;
       try { loaded = loadObjectMeta(record); } catch (e) { unreadable++; return; }
-      items.push({ record: record, loaded: loaded });
+      liveItems.push({ id: record.id, record: record, loaded: loaded });
     });
-    if (!items.length) {
+    if (!liveItems.length) {
+      if (opfsOk) { clearExportManifest(); exportOpfsReset().catch(function () {}); }
       status.textContent = "Nothing to download" + (unreadable ? " (" + unreadable + " item(s) unreadable)" : "") + ".";
       btn.disabled = false;
       return;
     }
-    var totalBytes = items.reduce(function (n, it) { return n + (it.loaded.metaJson.size || 0); }, 0);
-    var warning = "Download all " + items.length + " item" + (items.length === 1 ? "" : "s")
+    var liveIds = liveItems.map(function (it) { return it.id; });
+    var liveItemsById = new Map(liveItems.map(function (it) { return [it.id, it]; }));
+
+    // A previously prepared (or partially built) export is only useful if
+    // it's still for the same set of items -- otherwise the library has
+    // changed since and it has to be thrown away and rebuilt.
+    var manifest = opfsOk ? readExportManifest() : null;
+    var stale = !manifest || !sameIdSet(manifest.itemIds, liveIds);
+    if (!stale) {
+      if (manifest.done) {
+        status.textContent = "Getting your file ready…";
+        return exportOpfsReadFile().then(function (file) {
+          triggerBlobDownload(file, manifest.zipName);
+          status.textContent = "Downloaded " + manifest.itemIds.length + " item"
+            + (manifest.itemIds.length === 1 ? "" : "s") + ".";
+        });
+      }
+      return runExport(manifest, liveItemsById, status);
+    }
+
+    var totalBytes = liveItems.reduce(function (n, it) { return n + (it.loaded.metaJson.size || 0); }, 0);
+    var warning = "Download all " + liveItems.length + " item" + (liveItems.length === 1 ? "" : "s")
       + " (about " + formatSize(totalBytes) + ") as one .zip, organized by folder?\n\n"
-      + "Everything gets downloaded and re-packaged, so this can take a while for a large library.";
+      + (opfsOk
+        ? "This is prepared in the background as it downloads — if you lose your connection partway through, it picks back up from where it left off instead of starting over."
+        : "Everything gets downloaded and re-packaged, so this can take a while for a large library.");
     return askConfirm({ title: "Download everything?", message: warning, okLabel: "Download" }).then(function (ok) {
       if (!ok) { status.textContent = ""; return; }
 
-      // Every item's path inside the zip, de-duplicated within its own
-      // folder (two items can share a name if they're not actually the
-      // same file).
-      var usedNames = {};
-      items.forEach(function (it) {
-        var folderPath = zipFolderPathFor(it.loaded.metaJson);
-        var baseName = sanitizeZipComponent(it.loaded.metaJson.name || ("file." + (it.loaded.metaJson.ext || "bin")));
-        if (!usedNames[folderPath]) usedNames[folderPath] = new Set();
-        var finalName = baseName, n = 2;
-        while (usedNames[folderPath].has(finalName)) {
-          var dot = baseName.lastIndexOf(".");
-          finalName = dot > 0 ? baseName.slice(0, dot) + " (" + n + ")" + baseName.slice(dot) : baseName + " (" + n + ")";
-          n++;
-        }
-        usedNames[folderPath].add(finalName);
-        it.zipPath = folderPath ? folderPath + "/" + finalName : finalName;
-      });
-
-      // Flagged for as long as the actual transfer runs -- see the
-      // self-heal guard at the very top of the file. Set only now, after
-      // the confirm step, so declining it (or having nothing to download)
-      // never leaves the flag stuck on.
-      window.__ghostdriveExporting = true;
-
+      var zipPaths = assignZipPaths(liveItems);
       var zipName = "ghostdrive-export-" + new Date().toISOString().slice(0, 10) + ".zip";
-      return (useFSA
-        ? window.showSaveFilePicker({ suggestedName: zipName, types: [{ description: "Zip archive", accept: { "application/zip": [".zip"] } }] })
-        : Promise.resolve(null)
-      ).then(function (handle) {
-        return Promise.resolve(handle ? handle.createWritable() : null).then(function (writable) {
-          var chunks = writable ? null : [];
-          var pendingWrite = Promise.resolve();
-          var failErr = null;
-          var zip = new fflate.Zip(function (err, dat) {
-            if (err) { failErr = err; return; }
-            pendingWrite = pendingWrite.then(function () { return writable ? writable.write(dat) : chunks.push(dat); });
-          });
 
-          var done = 0, failed = 0;
-          function processOne(it) {
-            status.textContent = "Downloading " + (done + failed + 1) + " of " + items.length + " — " + it.zipPath;
-            return downloadObjectContent(it.record, it.loaded.fileKey, it.loaded.metaJson, function (loaded, total) {
-              if (total) status.textContent = "Downloading " + (done + failed + 1) + " of " + items.length
-                + " — " + it.zipPath + " (" + Math.round((loaded / total) * 100) + "%)";
-            }).then(function (blob) { return blob.arrayBuffer(); })
-              .then(function (buf) {
-                var entry = new fflate.ZipPassThrough(it.zipPath);
-                zip.add(entry);
-                entry.push(new Uint8Array(buf), true);
-                return pendingWrite; // this file's bytes are flushed before the next download starts
-              })
-              .then(function () { done++; })
-              .catch(function (err) {
-                console.error("[ghostdrive] download-all: skipped", it.zipPath, err);
-                failed++;
-              });
-          }
-          var at = 0;
-          function next() {
-            if (failErr) return Promise.reject(failErr);
-            if (at >= items.length) return Promise.resolve();
-            return processOne(items[at++]).then(next);
-          }
+      if (!opfsOk) return runExportLegacy(liveItems, zipPaths, zipName, status);
 
-          return next().then(function () {
-            zip.end();
-            return pendingWrite;
-          }).then(function () {
-            if (writable) return writable.close();
-            var blob = new Blob(chunks, { type: "application/zip" });
-            var a = document.createElement("a");
-            a.href = URL.createObjectURL(blob);
-            a.download = zipName;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            setTimeout(function () { URL.revokeObjectURL(a.href); }, 30000);
-          }).then(function () {
-            status.textContent = "Downloaded " + done + " of " + items.length + " item" + (items.length === 1 ? "" : "s")
-              + (failed ? ", " + failed + " failed (see console)" : "") + ".";
-          });
-        });
+      try { navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
+      var newManifest = {
+        itemIds: liveIds,
+        zipPaths: zipPaths,
+        completedCount: 0,
+        offset: 0,
+        totalBytes: totalBytes,
+        zipName: zipName,
+        done: false,
+      };
+      return exportOpfsReset().then(function () {
+        writeExportManifest(newManifest);
+        return runExport(newManifest, liveItemsById, status);
       });
     });
   }).catch(function (err) {
