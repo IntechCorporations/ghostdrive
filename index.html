@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-29b resumable-opfs-download-all";
+var GHOSTDRIVE_BUILD = "2026-09-30a fix-opfs-write-failure-corrupting-resume";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -2014,7 +2014,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-29b resumable-opfs-download-all";
+var GHOSTDRIVE_BUILD = "2026-09-30a fix-opfs-write-failure-corrupting-resume";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -8776,7 +8776,23 @@ function runExport(manifest, liveItemsById, status) {
     if (err) { zipErr = err; return; }
     var at = offset;
     offset += dat.byteLength;
-    pendingWrite = pendingWrite.then(function () { return exportOpfsWrite(at, dat); });
+    pendingWrite = pendingWrite.then(function () { return exportOpfsWrite(at, dat); })
+      .catch(function (writeErr) {
+        // A failed OPFS write corrupts everything written after it -- once
+        // this happens, every later chunk's write must also be skipped (a
+        // rejected promise's .then(onFulfilled) with no onRejected just
+        // passes the rejection through, which is exactly what we want here).
+        // The bug this guards against: without recording zipErr, processOne()
+        // below used to treat this the same as an ordinary per-item download
+        // failure -- logging it, marking the item "failed", and calling
+        // advanceAndSave() anyway, which advanced completedCount/offset past
+        // items whose bytes never actually reached disk. The zip would then
+        // finish (with a corrupted/truncated result), manifest.done would get
+        // set true, and every future click would just hand back that same
+        // broken file instead of ever resuming for real.
+        if (!zipErr) zipErr = writeErr;
+        throw writeErr;
+      });
   });
 
   function advanceAndSave() {
@@ -8801,6 +8817,12 @@ function runExport(manifest, liveItemsById, status) {
       })
       .then(function () { advanceAndSave(); })
       .catch(function (err) {
+        // A broken OPFS write is fatal to the whole export, not a
+        // skip-and-continue: rethrow so next() stops immediately, leaving
+        // completedCount exactly where it was before this item -- so a
+        // retry actually resumes from real, disk-backed progress instead of
+        // skipping past items that were never truly written.
+        if (zipErr) throw zipErr;
         console.error("[ghostdrive] download-all: skipped", zipPath, err);
         failed++;
         advanceAndSave();
