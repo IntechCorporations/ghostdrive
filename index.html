@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-09-30a fix-opfs-write-failure-corrupting-resume";
+var GHOSTDRIVE_BUILD = "2026-11-10a nested-private-vault-and-big-scrollbar";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -144,6 +144,19 @@ try {
   .hidden { display: none !important; }
   a { color: var(--brass); }
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  /* A bigger, easier-to-grab scrollbar. Dragging the thumb a long way --
+     e.g. from the top to the bottom of a library with thousands of items
+     -- is much harder with the hairline-thin default scrollbar most
+     browsers ship. This widens the track/thumb everywhere (the main page
+     and any scrollable panel, like a modal or the log list) and gives the
+     thumb enough contrast against the dark theme to find at a glance. */
+  html { scrollbar-width: auto; scrollbar-color: var(--line) var(--ink); }
+  ::-webkit-scrollbar { width: 16px; height: 16px; }
+  ::-webkit-scrollbar-track { background: var(--ink); }
+  ::-webkit-scrollbar-thumb { background: var(--line); border: 4px solid var(--ink); border-radius: 9px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+  ::-webkit-scrollbar-corner { background: var(--ink); }
 
   .demo-banner {
     background: var(--brass-tint); color: var(--text); font-size: 13px; text-align: center;
@@ -2014,7 +2027,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-09-30a fix-opfs-write-failure-corrupting-resume";
+var GHOSTDRIVE_BUILD = "2026-11-10a nested-private-vault-and-big-scrollbar";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -5020,8 +5033,17 @@ function itemIsEncrypted(metaJson) { return metaJson.contentEncrypted !== false;
    toggle is on. That setting IS persisted, because it is a preference
    about the feed rather than an unlocked state. */
 var PRIVATE_FOLDER = "\u0001private\u0001";
+// A second, deeper reserved marker -- "a hidden folder within the hidden
+// folder". Items tagged with this one are nested one level further in:
+// they need BOTH the outer vault AND this inner one unlocked to appear
+// anywhere, same rule as the outer layer but stacked. There is no actual
+// folder tree anywhere else in this app (folders are just tags on an
+// item) -- this is the one deliberate exception, and it works the same
+// way: a reserved, untypeable name that never shows up in any folder list.
+var PRIVATE_FOLDER_2 = "\u0001private2\u0001";
 var PRIVATE_IN_FEED_KEY = "ghostdrive-private-in-feed";
 var privateUnlocked = false;           // never persisted -- see above
+var privateUnlocked2 = false;          // same rule, one level deeper
 var privateInFeed = (function () {
   try { return localStorage.getItem(PRIVATE_IN_FEED_KEY) === "1"; } catch (e) { return false; }
 })();
@@ -5036,12 +5058,21 @@ function setPrivateInFeed(on) {
 function isPrivateItem(metaJson) {
   return itemFolders(metaJson).indexOf(PRIVATE_FOLDER) !== -1;
 }
-// Strips private items unless the vault is unlocked this session.
-function filterPrivate(items, getMeta) {
-  if (privateUnlocked) return items;
-  return items.filter(function (it) { return !isPrivateItem(getMeta ? getMeta(it) : it.metaJson); });
+function isPrivateItem2(metaJson) {
+  return itemFolders(metaJson).indexOf(PRIVATE_FOLDER_2) !== -1;
 }
-// Folder names shown anywhere in the UI never include the reserved one.
+// Strips private items (both layers) unless the matching vault is unlocked
+// this session. No early-return shortcut once the outer vault is
+// unlocked -- a layer-2 item still needs privateUnlocked2 checked too.
+function filterPrivate(items, getMeta) {
+  return items.filter(function (it) {
+    var meta = getMeta ? getMeta(it) : it.metaJson;
+    if (isPrivateItem(meta) && !privateUnlocked) return false;
+    if (isPrivateItem2(meta) && !(privateUnlocked && privateUnlocked2)) return false;
+    return true;
+  });
+}
+// Folder names shown anywhere in the UI never include either reserved one.
 /* Library-wide maintenance passes (face scan, thumbnail rebuild, filing
    encrypted items) must not touch private rows while locked. The filing
    pass is the one that genuinely leaked: it would add a private item to a
@@ -5049,15 +5080,18 @@ function filterPrivate(items, getMeta) {
    two are quieter -- they would decrypt private items and fold them into
    counts and person lists -- but the same rule is the simple one. */
 function withoutPrivateRows(rows) {
-  if (privateUnlocked) return rows || [];
   return (rows || []).filter(function (record) {
-    try { return !isPrivateItem(loadObjectMeta(record).metaJson); }
-    catch (e) { return true; }   // unreadable rows were never private-tagged for us
+    try {
+      var meta = loadObjectMeta(record).metaJson;
+      if (isPrivateItem(meta) && !privateUnlocked) return false;
+      if (isPrivateItem2(meta) && !(privateUnlocked && privateUnlocked2)) return false;
+      return true;
+    } catch (e) { return true; }   // unreadable rows were never private-tagged for us
   });
 }
 
 function visibleFolderNames(list) {
-  return (list || []).filter(function (n) { return n !== PRIVATE_FOLDER; });
+  return (list || []).filter(function (n) { return n !== PRIVATE_FOLDER && n !== PRIVATE_FOLDER_2; });
 }
 
 function itemFolders(metaJson) {
@@ -5359,20 +5393,46 @@ function renameFolder(oldName, newName) {
 /* ---------------- Private folder: unlock, lock, UI ----------------
    The entrance is a press-and-hold on an unlabelled dot in the footer.
    A hold rather than a tap means a curious tap reveals nothing, and there
-   is no button text, tooltip or aria-label naming what it opens. */
+   is no button text, tooltip or aria-label naming what it opens.
+
+   The SAME dot does double duty for the inner vault: holding it again
+   while already inside the outer Private view goes one level deeper
+   instead of doing nothing. No second button or chip is added anywhere --
+   a visible entrance for the inner layer would give away that there's
+   something nested inside the outer one, which defeats the point. Going
+   back out is one hold (from the bottom) or the existing Lock button,
+   which now steps back exactly one level per click rather than always
+   dropping straight to fully locked. */
 var PRIVATE_HOLD_MS = 1500;
 var privateHoldTimer = null;
 
 function unlockPrivate() {
   privateUnlocked = true;
+  privateUnlocked2 = false; // a fresh entrance into the outer vault always starts with the inner one locked
   currentFolder = PRIVATE_FOLDER;
   var sel = $("#folder-select");
   if (sel) sel.value = "";
   refreshGallery();
 }
+function enterPrivateDeeper() {
+  privateUnlocked2 = true;
+  currentFolder = PRIVATE_FOLDER_2;
+  refreshGallery();
+}
 function lockPrivate() {
+  // Steps back exactly one level per call: out of the inner vault first
+  // (if it's open), then fully locked on the next call -- same "undo your
+  // own steps" shape as how you got in.
+  if (privateUnlocked2) {
+    privateUnlocked2 = false;
+    currentFolder = PRIVATE_FOLDER;
+    selectedIds.clear();
+    refreshGallery();
+    return;
+  }
   privateUnlocked = false;
-  if (currentFolder === PRIVATE_FOLDER) currentFolder = "";
+  privateUnlocked2 = false; // belt-and-suspenders -- should already be false by this point
+  if (currentFolder === PRIVATE_FOLDER || currentFolder === PRIVATE_FOLDER_2) currentFolder = "";
   // Nothing private may stay selected across a lock -- a selection that
   // outlived the lock would let a later action touch items the person can
   // no longer see.
@@ -5382,10 +5442,13 @@ function lockPrivate() {
 function renderPrivateBar(allItems) {
   var bar = $("#private-bar");
   if (!bar) return;
-  var showing = privateUnlocked && currentFolder === PRIVATE_FOLDER;
+  var atOuter = privateUnlocked && currentFolder === PRIVATE_FOLDER;
+  var atInner = privateUnlocked && privateUnlocked2 && currentFolder === PRIVATE_FOLDER_2;
+  var showing = atOuter || atInner;
   bar.classList.toggle("hidden", !showing);
   if (!showing) return;
-  var n = (allItems || []).filter(function (it) { return isPrivateItem(it.metaJson); }).length;
+  var checker = atInner ? isPrivateItem2 : isPrivateItem;
+  var n = (allItems || []).filter(function (it) { return checker(it.metaJson); }).length;
   var countEl = $("#pb-count");
   if (countEl) countEl.textContent = n === 1 ? "1 item · hidden everywhere else" : n + " items · hidden everywhere else";
   var cb = $("#pb-in-feed");
@@ -5406,7 +5469,21 @@ function bindPrivateControls() {
       dot.classList.add("holding");
       privateHoldTimer = setTimeout(function () {
         dot.classList.remove("holding");
-        unlockPrivate();
+        if (!privateUnlocked) { unlockPrivate(); return; }
+        if (currentFolder === PRIVATE_FOLDER && !privateUnlocked2) { enterPrivateDeeper(); return; }
+        if (currentFolder === PRIVATE_FOLDER_2) {
+          // Already at the bottom -- a hold here steps back up one level,
+          // the same direction a hold always moves: further from where
+          // you started.
+          privateUnlocked2 = false;
+          currentFolder = PRIVATE_FOLDER;
+          refreshGallery();
+          return;
+        }
+        // Unlocked but browsing somewhere else in the library -- jump back
+        // to the (outer) Private view, same convenience as before.
+        currentFolder = PRIVATE_FOLDER;
+        refreshGallery();
       }, PRIVATE_HOLD_MS);
     };
     var cancel = function () {
@@ -5435,7 +5512,11 @@ function bindPrivateControls() {
       if (st) st.textContent = "Select some items first, then move them here.";
       return;
     }
-    addItemsToFolder(Array.from(selectedIds), PRIVATE_FOLDER);
+    // Same bar, same button, whichever layer is currently open -- "here"
+    // means the inner vault while standing inside it, same as it always
+    // means the outer one otherwise.
+    var target = (privateUnlocked2 && currentFolder === PRIVATE_FOLDER_2) ? PRIVATE_FOLDER_2 : PRIVATE_FOLDER;
+    addItemsToFolder(Array.from(selectedIds), target);
   });
 }
 
@@ -5456,6 +5537,10 @@ function renderFolderRail(allFolders) {
     pc.className = "folder-chip private-chip" + (currentFolder === PRIVATE_FOLDER ? " active" : "");
     pc.textContent = "Private";
     pc.addEventListener("click", function () {
+      // Stepping back to the outer view this way always leaves the inner
+      // vault locked behind it, same as clicking Lock from inside it --
+      // there's no visible trace here of whether it was ever open.
+      privateUnlocked2 = false;
       currentFolder = PRIVATE_FOLDER;
       var sel = $("#folder-select");
       if (sel) sel.value = "";
@@ -5592,7 +5677,7 @@ $("#btn-selection-folder").addEventListener("click", function () {
   var known = visibleFolderNames(Array.from(knownFolders)).sort().join(", ");
   askText({
     title: "Add " + selectedIds.size + " item(s) to which folder?",
-    initial: currentFolder && currentFolder !== PRIVATE_FOLDER ? currentFolder : "",
+    initial: currentFolder && currentFolder !== PRIVATE_FOLDER && currentFolder !== PRIVATE_FOLDER_2 ? currentFolder : "",
     placeholder: "Folder name",
     hint: known ? "Existing: " + known : "",
     okLabel: "Add",
@@ -5648,10 +5733,7 @@ function findDuplicates() {
   btn.disabled = true;
   status.textContent = "Scanning…";
   return fetchAllObjects().then(function (allRows) {
-    var res = { data: allRows.filter(function (record) {
-      if (privateUnlocked) return true;
-      try { return !isPrivateItem(loadObjectMeta(record).metaJson); } catch (e) { return true; }
-    }) };
+    var res = { data: withoutPrivateRows(allRows) };
     var byKey = new Map();
     var unreadable = 0;
     (res.data || []).forEach(function (record) {
@@ -5703,10 +5785,7 @@ $("#btn-find-duplicates").addEventListener("click", findDuplicates);
 function selectDuplicateExtras() {
   if (!duplicateIds) return;
   return fetchAllObjects().then(function (allRows) {
-    var res = { data: allRows.filter(function (record) {
-      if (privateUnlocked) return true;
-      try { return !isPrivateItem(loadObjectMeta(record).metaJson); } catch (e) { return true; }
-    }) };
+    var res = { data: withoutPrivateRows(allRows) };
     var byKey = new Map();
     (res.data || []).forEach(function (record) {
       if (!duplicateIds.has(record.id)) return;
@@ -5987,7 +6066,7 @@ function refreshGallery() {
       ? "No duplicates left in this view."
       : currentSearch
       ? 'Nothing matches "' + currentSearch + '".'
-      : (currentFolder
+      : ((currentFolder && currentFolder !== PRIVATE_FOLDER && currentFolder !== PRIVATE_FOLDER_2)
           ? 'Nothing in "' + currentFolder + '" yet. Drag files in, or move some over from another folder.'
           : 'Nothing here yet. Drag files in, or add photos and videos above.');
 
@@ -8932,7 +9011,7 @@ function sanitizeZipComponent(name) {
 function zipFolderPathFor(metaJson) {
   var folders = itemFolders(metaJson);
   if (!folders.length) return "";
-  var first = folders[0] === PRIVATE_FOLDER ? "Private" : folders[0];
+  var first = (folders[0] === PRIVATE_FOLDER || folders[0] === PRIVATE_FOLDER_2) ? "Private" : folders[0];
   return sanitizeZipComponent(first);
 }
 function downloadAllAsZip() {
@@ -9210,8 +9289,11 @@ function loadReelsIndex(mode) {
       /* The feed is the one place private items may appear while the
          vault is locked -- and only because the toggle inside the private
          folder explicitly asked for it. Unlocked, they are simply part of
-         the library and follow the normal rules. */
+         the library and follow the normal rules. Same deal one level
+         deeper: an inner-vault item needs the SAME toggle plus both layers
+         unlocked, never just the toggle alone. */
       if (isPrivateItem(loaded.metaJson) && !privateInFeed && !privateUnlocked) return;
+      if (isPrivateItem2(loaded.metaJson) && !privateInFeed && !(privateUnlocked && privateUnlocked2)) return;
       recordsById.set(record.id, record);
       items.push({ id: record.id, date: loaded.metaJson.date || "" });
     });
