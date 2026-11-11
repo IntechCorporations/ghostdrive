@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-11-11a decoy-mode-and-intimate-question-gates";
+var GHOSTDRIVE_BUILD = "2026-11-11b video-thumbnail-rvfc-fix";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -2049,7 +2049,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-11-11a decoy-mode-and-intimate-question-gates";
+var GHOSTDRIVE_BUILD = "2026-11-11b video-thumbnail-rvfc-fix";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -3817,6 +3817,15 @@ function makeThumbnail(file, kind) {
       var vidW = null, vidH = null;
       var best = null; // { blob, luma }
       var at = 0;
+      // Safari/iOS Safari has a long-standing bug (WebKit bug 236604) where
+      // canvas.drawImage(video, ...) right after a seek -- even after the
+      // "seeked" event fires -- can paint a stale or solid-black frame
+      // instead of the real one at that timestamp. requestVideoFrameCallback
+      // (installed *before* the seek) only fires once a genuinely decoded,
+      // paintable frame is ready, which is WebKit's own confirmed fix for
+      // this. Supported Safari/iOS Safari 15.4+; feature-detected so older
+      // browsers keep using the "seeked" event exactly as before.
+      var supportsRVFC = typeof video.requestVideoFrameCallback === "function";
 
       function cleanup() { try { URL.revokeObjectURL(video.src); } catch (e) {} }
       function finishWithBest() {
@@ -3869,6 +3878,19 @@ function makeThumbnail(file, kind) {
         if (!duration || at >= SAMPLE_FRACTIONS.length) return finishWithBest();
         var target = Math.min(duration * SAMPLE_FRACTIONS[at], Math.max(0, duration - 0.1));
         at++;
+        if (supportsRVFC) {
+          // Must be registered before setting currentTime -- it then fires
+          // once, for the first frame actually presented after the seek
+          // completes (seeking stops presentation, so nothing else can fire
+          // it first).
+          video.requestVideoFrameCallback(function () {
+            if (settled) return;
+            captureFrame().then(considerAndContinue).catch(function () { tryNextSample(); });
+          });
+          try { video.currentTime = target; }
+          catch (e) { finishWithBest(); }
+          return;
+        }
         var onSeeked = function () {
           video.removeEventListener("seeked", onSeeked);
           if (settled) return;
@@ -3885,10 +3907,22 @@ function makeThumbnail(file, kind) {
         vidW = video.videoWidth; vidH = video.videoHeight;
         // No usable duration means nothing to seek within -- take the frame
         // that is already showing rather than nothing at all.
-        if (!duration) return captureFrame().then(function (shot) {
-          if (shot && shot.blob) best = shot;
-          finishWithBest();
-        }).catch(finishWithBest);
+        if (!duration) {
+          if (supportsRVFC) {
+            video.requestVideoFrameCallback(function () {
+              if (settled) return;
+              captureFrame().then(function (shot) {
+                if (shot && shot.blob) best = shot;
+                finishWithBest();
+              }).catch(finishWithBest);
+            });
+            return;
+          }
+          return captureFrame().then(function (shot) {
+            if (shot && shot.blob) best = shot;
+            finishWithBest();
+          }).catch(finishWithBest);
+        }
         tryNextSample();
       });
       // An error after we already have a frame should still hand that frame
