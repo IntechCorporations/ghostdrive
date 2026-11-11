@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ghostdrive</title>
+<title>FieldLog</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <script>
 (function(){
-var GHOSTDRIVE_BUILD = "2026-11-10a nested-private-vault-and-big-scrollbar";
+var GHOSTDRIVE_BUILD = "2026-11-11a decoy-mode-and-intimate-question-gates";
 /* ---------------- Stale-build self-healing ----------------
    The service worker registration below already handles a stale *worker*.
    It does NOT handle Chrome's ordinary HTTP cache serving a stale
@@ -157,6 +157,28 @@ try {
   ::-webkit-scrollbar-thumb { background: var(--line); border: 4px solid var(--ink); border-radius: 9px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
   ::-webkit-scrollbar-corner { background: var(--ink); }
+
+  /* Decoy mode (false UX): before gate 1 is passed, the real feature set --
+     anything that would read as "this is actually a general photo/video
+     vault" rather than a boring one-trick job-document log -- is hidden
+     outright rather than just unreachable. A button that's merely disabled
+     still shows its label, and "People" or "Find duplicates" on what's
+     supposed to look like a receipt scanner is exactly the kind of detail
+     that gives the game away to someone just poking around. */
+  body.decoy-mode #btn-choose-files-resumable,
+  body.decoy-mode #btn-import-google-photos,
+  body.decoy-mode #btn-open-reels,
+  body.decoy-mode #btn-open-reels-video,
+  body.decoy-mode #btn-open-people,
+  body.decoy-mode #btn-rebuild-thumbs,
+  body.decoy-mode #btn-find-duplicates,
+  body.decoy-mode #btn-select-dupe-extras,
+  body.decoy-mode #btn-download-all,
+  body.decoy-mode #find-duplicates-status,
+  body.decoy-mode #rebuild-thumbs-status,
+  body.decoy-mode #download-all-status {
+    display: none !important;
+  }
 
   .demo-banner {
     background: var(--brass-tint); color: var(--text); font-size: 13px; text-align: center;
@@ -918,9 +940,9 @@ try {
 
   <section id="screen-auth" class="screen hidden">
     <div class="card">
-      <p class="eyebrow">Private photo &amp; video storage</p>
-      <h1>Ghostdrive</h1>
-      <p class="tagline">Everything's encrypted before it leaves your device. Everything else — uploading, browsing, editing a date — works the way you'd expect.</p>
+      <p class="eyebrow">Job-site photo &amp; video log</p>
+      <h1>FieldLog</h1>
+      <p class="tagline">Keep photos and video walkthroughs from the job site — panels, permits, before/after shots — organized and backed up in one place.</p>
 
       <button type="button" id="btn-google-signin" class="oauth-btn">
         <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
@@ -999,7 +1021,7 @@ try {
   <section id="screen-vault" class="screen hidden" style="align-items: stretch; padding: 0; min-height: auto;">
     <div style="width: 100%;">
       <header class="vault-header">
-        <div class="brand"><span class="mark">◐</span> Ghostdrive</div>
+        <div class="brand" id="vault-brand"><span class="mark">◐</span> <span id="vault-brand-name">FieldLog</span></div>
         <div class="header-actions">
           <label class="upload-btn">
             <button type="button" id="btn-choose-files">+ Add photos &amp; videos</button>
@@ -1341,7 +1363,7 @@ try {
 </div>
 
 <div id="page-drop-overlay">
-  <div class="drop-panel"><span class="mark">◐</span> Drop to add to Ghostdrive</div>
+  <div class="drop-panel"><span class="mark">◐</span> Drop to add to <span id="drop-panel-brand-name">FieldLog</span></div>
 </div>
 
 <div id="upload-tray"></div>
@@ -2027,7 +2049,7 @@ var BUCKET = "ghostdrive";
 // actually the new one?" is answerable in one glance at the console --
 // GitHub Pages caching and the two-place deploy (Pages + Cloudflare) made
 // that question cost real debugging time more than once.
-var GHOSTDRIVE_BUILD = "2026-11-10a nested-private-vault-and-big-scrollbar";
+var GHOSTDRIVE_BUILD = "2026-11-11a decoy-mode-and-intimate-question-gates";
 console.log("[ghostdrive] build", GHOSTDRIVE_BUILD);
 
 var R2_WORKER_URL = "https://ghostdrive-r2-worker.intechcorporations.workers.dev";
@@ -2399,6 +2421,15 @@ function performSignOut() {
   galleryRoot.innerHTML = "";
   hideModal("#viewer-modal");
   clearDeviceKey();
+  // All three unlock flags are deliberately never persisted (see
+  // SECRET_GATES / PRIVATE_FOLDER above) -- but without resetting them
+  // here, signing back in within the SAME tab (no reload in between) would
+  // silently skip straight back to wherever they were left, including past
+  // gate 1. A sign-out has to be a real re-lock, not just a Supabase
+  // session swap.
+  realUnlocked = false;
+  privateUnlocked = false;
+  privateUnlocked2 = false;
   sb.auth.signOut().then(function () { showAuthScreen(email); });
 }
 function maybeFinishPendingSignOut() {
@@ -4215,7 +4246,19 @@ function prepareUpload(file, id, folder) {
                what you want right after uploading it. Never displayed --
                it only drives the "Recently added" sort. */
             uploadedAt: new Date().toISOString(),
-            folders: folder ? [folder] : [], folder: folder,
+            // Anything added while gate 1 hasn't been passed yet gets the
+            // decoy tag too (on top of whatever folder was actually open),
+            // or it would upload successfully and then immediately vanish
+            // from view the moment refreshGallery's decoy allowlist runs --
+            // a file someone just watched finish uploading disappearing
+            // looks exactly like the app being broken, not like privacy
+            // working as intended.
+            folders: (function () {
+              var f = folder ? [folder] : [];
+              if (!realUnlocked && f.indexOf(DECOY_FOLDER) === -1) f.push(DECOY_FOLDER);
+              return f;
+            })(),
+            folder: folder,
             size: file.size, ext: fileExt(file.name), duration: thumbInfo.duration,
             width: thumbInfo.width || null, height: thumbInfo.height || null,
             // Large files skip content encryption entirely (an explicit,
@@ -5032,6 +5075,99 @@ function itemIsEncrypted(metaJson) { return metaJson.contentEncrypted !== false;
    The feed is the one deliberate exception, and only when the in-feed
    toggle is on. That setting IS persisted, because it is a preference
    about the feed rather than an unlocked state. */
+/* ---------------- False UX / decoy mode ----------------
+   Signing in correctly used to be the whole gate. It still is one, but the
+   thing it unlocks by default is no longer the real library -- it's an
+   empty, FieldLog-branded "job document log" with none of the real app's
+   feature set visible (see the decoy-mode CSS block above). The real
+   library sits one more gate in, behind an "intimate question" (an obscure
+   personal-memory question, not a typed password) rather than the plain
+   hold-to-unlock the private folders still use -- someone who already has
+   the sign-in credentials is exactly the threat this extra gate exists
+   for, so the gate itself has to ask for something credentials alone don't
+   give away.
+
+   DECOY_FOLDER works exactly like PRIVATE_FOLDER/PRIVATE_FOLDER_2 (a
+   reserved, untypeable tag) but inverted: while !realUnlocked the gallery
+   is an ALLOWLIST of only decoy-tagged items, rather than a blocklist of
+   private ones. Nothing stops a few genuinely boring photos (an actual
+   receipt, an actual permit) from being tagged into it for realism -- it's
+   a normal folder underneath, just one that's shown by default instead of
+   hidden by default. */
+var DECOY_FOLDER = "\u0001decoy\u0001";
+var realUnlocked = false; // never persisted -- same rule as privateUnlocked below
+function isDecoyItem(metaJson) {
+  return itemFolders(metaJson).indexOf(DECOY_FOLDER) !== -1;
+}
+
+/* Three independent "intimate question" gates -- gate1 (decoy -> real),
+   folder1 and folder2 (the existing private-vault layers, now also
+   question-gated instead of a bare hold). Each answer is normalized
+   (trimmed, lowercased, internal whitespace collapsed) and checked as
+   SHA-256(salt + normalized answer) against a pre-computed hash -- the
+   plain-text answer itself is never embedded in this file, only the salt
+   and the resulting digest. A wrong or cancelled answer resolves false and
+   the caller does nothing visible: no error, no shake, no "incorrect" --
+   the whole point is that failing this gate looks identical to never
+   having found it. */
+var SECRET_GATES = {
+  gate1: {
+    question: "First concert you've ever been to?",
+    salt: "e5396be64ce7388fe3ed3c51576edc3d",
+    hash: "e2719709da72363ceeb1250edd940524e4edf674236c9c3a1c6c29383d2de275",
+  },
+  folder1: {
+    question: "Last name of the triplets who lived across the street in Florida?",
+    salt: "9b2fa437a2a8146a1571da99f20b6318",
+    hash: "1060fec9b15f68c467b6384edd5a45bd73a5701a240a0f65dc1bf4de221248d2",
+  },
+  folder2: {
+    question: "Who did you build the underground fort with?",
+    salt: "54a433698b8c032b5be8150b5fca1f92",
+    hash: "9b507b302f7c134a19d7e11350371e4e8d9b46351142ffa6cae16378c6c504d3",
+  },
+};
+function normalizeSecretAnswer(s) {
+  return String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+function sha256Hex(str) {
+  var enc = new TextEncoder().encode(str);
+  return crypto.subtle.digest("SHA-256", enc).then(function (buf) {
+    var bytes = new Uint8Array(buf), hex = "";
+    for (var i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
+    return hex;
+  });
+}
+function verifySecretAnswer(answer, gateKey) {
+  var gate = SECRET_GATES[gateKey];
+  if (!gate || !answer) return Promise.resolve(false);
+  return sha256Hex(gate.salt + normalizeSecretAnswer(answer)).then(function (hex) {
+    return hex === gate.hash;
+  });
+}
+// Asks the gate's question via the same modal used for folder naming, then
+// verifies the typed answer. Resolves true only on a correct answer --
+// wrong, empty, or cancelled all resolve false, and the caller treats all
+// three identically (do nothing) rather than distinguishing them.
+function passSecretGate(gateKey) {
+  var gate = SECRET_GATES[gateKey];
+  if (!gate) return Promise.resolve(false);
+  return askText({ title: gate.question, placeholder: "Answer", okLabel: "Continue" })
+    .then(function (answer) { return verifySecretAnswer(answer, gateKey); })
+    .catch(function () { return false; });
+}
+// Swaps the visible brand name and the decoy-mode header chrome based on
+// realUnlocked. Cheap enough to call on every refreshGallery rather than
+// tracking a separate "did this change" flag.
+function renderBrand() {
+  var name = realUnlocked ? "Ghostdrive" : "FieldLog";
+  var brandName = $("#vault-brand-name");
+  if (brandName) brandName.textContent = name;
+  var dropName = $("#drop-panel-brand-name");
+  if (dropName) dropName.textContent = name;
+  try { document.body.classList.toggle("decoy-mode", !realUnlocked); } catch (e) {}
+}
+
 var PRIVATE_FOLDER = "\u0001private\u0001";
 // A second, deeper reserved marker -- "a hidden folder within the hidden
 // folder". Items tagged with this one are nested one level further in:
@@ -5091,7 +5227,7 @@ function withoutPrivateRows(rows) {
 }
 
 function visibleFolderNames(list) {
-  return (list || []).filter(function (n) { return n !== PRIVATE_FOLDER && n !== PRIVATE_FOLDER_2; });
+  return (list || []).filter(function (n) { return n !== PRIVATE_FOLDER && n !== PRIVATE_FOLDER_2 && n !== DECOY_FOLDER; });
 }
 
 function itemFolders(metaJson) {
@@ -5406,6 +5542,13 @@ function renameFolder(oldName, newName) {
 var PRIVATE_HOLD_MS = 1500;
 var privateHoldTimer = null;
 
+function unlockReal() {
+  realUnlocked = true;
+  currentFolder = ""; // land on "All items" of the real library, same as a fresh sign-in always has
+  var sel = $("#folder-select");
+  if (sel) sel.value = "";
+  refreshGallery();
+}
 function unlockPrivate() {
   privateUnlocked = true;
   privateUnlocked2 = false; // a fresh entrance into the outer vault always starts with the inner one locked
@@ -5469,12 +5612,30 @@ function bindPrivateControls() {
       dot.classList.add("holding");
       privateHoldTimer = setTimeout(function () {
         dot.classList.remove("holding");
-        if (!privateUnlocked) { unlockPrivate(); return; }
-        if (currentFolder === PRIVATE_FOLDER && !privateUnlocked2) { enterPrivateDeeper(); return; }
+        /* Three independent forward gates, each behind its own intimate
+           question (see SECRET_GATES) instead of a bare hold -- decoy ->
+           real, then the two existing private layers. Stepping BACKWARD
+           out of a layer you're already inside never asks anything, same
+           as before; only moving somewhere you aren't yet does. A wrong or
+           cancelled answer resolves false and nothing visible happens --
+           the dot just stops "holding" and the screen stays exactly as it
+           was, indistinguishable from a hold that did nothing at all. */
+        if (!realUnlocked) {
+          passSecretGate("gate1").then(function (ok) { if (ok) unlockReal(); });
+          return;
+        }
+        if (!privateUnlocked) {
+          passSecretGate("folder1").then(function (ok) { if (ok) unlockPrivate(); });
+          return;
+        }
+        if (currentFolder === PRIVATE_FOLDER && !privateUnlocked2) {
+          passSecretGate("folder2").then(function (ok) { if (ok) enterPrivateDeeper(); });
+          return;
+        }
         if (currentFolder === PRIVATE_FOLDER_2) {
           // Already at the bottom -- a hold here steps back up one level,
           // the same direction a hold always moves: further from where
-          // you started.
+          // you started. No question needed to go backward.
           privateUnlocked2 = false;
           currentFolder = PRIVATE_FOLDER;
           refreshGallery();
@@ -5523,7 +5684,12 @@ function bindPrivateControls() {
 function renderFolderRail(allFolders) {
   var rail = $("#folder-rail");
   if (!rail) return;
-  var folders = visibleFolderNames(Array.from(new Set([].concat(Array.from(knownFolders), allFolders || []))))
+  // knownFolders is an in-memory set that can carry real folder names seen
+  // earlier this tab session (e.g. from before a sign-out). It's only
+  // merged in once realUnlocked -- otherwise a folder created/used in the
+  // real library earlier this session would leak into the decoy rail even
+  // though the current dataset (allFolders) is correctly decoy-only.
+  var folders = visibleFolderNames(Array.from(new Set(realUnlocked ? [].concat(Array.from(knownFolders), allFolders || []) : (allFolders || []))))
     .sort(function (a, b) { return a.localeCompare(b); });
   rail.innerHTML = "";
 
@@ -5957,8 +6123,9 @@ $("#folder-select").addEventListener("change", function (e) {
 function renderFolderOptions(allFolders) {
   // The reserved private name is stripped here too -- knownFolders picks it
   // up when items are filed into it, and without this it would appear as an
-  // ordinary option in the dropdown even while locked.
-  var folders = visibleFolderNames(Array.from(new Set([].concat(Array.from(knownFolders), allFolders || [])))).sort(function (a, b) {
+  // ordinary option in the dropdown even while locked. Same decoy-mode
+  // guard as renderFolderRail -- see there for why.
+  var folders = visibleFolderNames(Array.from(new Set(realUnlocked ? [].concat(Array.from(knownFolders), allFolders || []) : (allFolders || [])))).sort(function (a, b) {
     return a.localeCompare(b);
   });
   var select = $("#folder-select");
@@ -6032,6 +6199,15 @@ function refreshGallery() {
        while locked there is no path by which one can surface. */
     allItems = filterPrivate(allItems);
     renderPrivateBar(allItems);
+
+    /* Decoy mode is the mirror image: before gate 1 is passed, this is an
+       ALLOWLIST instead of a blocklist -- only items tagged DECOY_FOLDER
+       survive. Same chokepoint, same reasoning: everything else (folder
+       names, type list, counts, search, the grid) is derived from allItems
+       below, so nothing real can leak through any of those derived views
+       while locked. */
+    if (!realUnlocked) allItems = allItems.filter(function (it) { return isDecoyItem(it.metaJson); });
+    renderBrand();
 
     var allFolders = visibleFolderNames(Array.from(new Set(allItems.reduce(function (acc, it) {
       return acc.concat(itemFolders(it.metaJson));
@@ -9011,7 +9187,8 @@ function sanitizeZipComponent(name) {
 function zipFolderPathFor(metaJson) {
   var folders = itemFolders(metaJson);
   if (!folders.length) return "";
-  var first = (folders[0] === PRIVATE_FOLDER || folders[0] === PRIVATE_FOLDER_2) ? "Private" : folders[0];
+  var first = (folders[0] === PRIVATE_FOLDER || folders[0] === PRIVATE_FOLDER_2) ? "Private"
+    : (folders[0] === DECOY_FOLDER) ? "Documents" : folders[0];
   return sanitizeZipComponent(first);
 }
 function downloadAllAsZip() {
